@@ -1,0 +1,297 @@
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import numpy as np
+import pandas as pd
+import pickle
+import tensorflow as tf
+from tensorflow.keras.models import load_model
+from typing import List, Optional
+import uvicorn
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="Credit Score Prediction API",
+    description="API for predicting credit scores using machine learning",
+    version="1.0.0"
+)
+
+# Global variables for model and scaler
+model = None
+scaler = None
+
+# Load model and scaler on startup
+@app.on_event("startup")
+async def load_model_and_scaler():
+    global model, scaler
+    try:
+        # Load the trained model
+        model = load_model('final_model_credit_score.keras')
+        print("Model loaded successfully!")
+        
+        # Load the scaler
+        with open("credit_score_scaler", 'rb') as f:
+            scaler = pickle.load(f)
+        print("Scaler loaded successfully!")
+        
+    except Exception as e:
+        print(f"Error loading model or scaler: {e}")
+        raise e
+
+# Define input schema based on your dataset
+class CreditScoreInput(BaseModel):
+    month: int  # 1-8 (January to August)
+    age: int
+    annual_income: float
+    monthly_inhand_salary: float
+    credit_history_age: int
+    total_emi_per_month: float
+    num_bank_accounts: int
+    num_credit_card: int
+    interest_rate: int
+    num_of_loan: int
+    delay_from_due_date: int
+    num_of_delayed_payment: int
+    changed_credit_limit: float
+    num_credit_inquiries: int
+    outstanding_debt: float
+    credit_utilization_ratio: float
+    amount_invested_monthly: float
+    monthly_balance: float
+    
+    # Categorical features (encoded)
+    credit_mix: int  # 0: Bad, 1: Standard, 2: Good
+    payment_of_min_amount: int  # 0: No, 1: Yes
+    payment_behaviour: int  # 1-6 scale
+    
+    # Loan type features (binary encoding)
+    auto_loan: int  # 0 or 1
+    credit_builder_loan: int  # 0 or 1
+    debt_consolidation_loan: int  # 0 or 1
+    no_loan: int  # 0 or 1
+    not_specified: int  # 0 or 1
+    payday_loan: int  # 0 or 1
+    personal_loan: int  # 0 or 1
+    
+    # Occupation features (one-hot encoded - you'll need all occupation columns)
+    # Based on your code, these should be binary (0 or 1)
+    occupation_accountant: Optional[int] = 0
+    occupation_architect: Optional[int] = 0
+    occupation_developer: Optional[int] = 0
+    occupation_doctor: Optional[int] = 0
+    occupation_engineer: Optional[int] = 0
+    occupation_entrepreneur: Optional[int] = 0
+    occupation_journalist: Optional[int] = 0
+    occupation_lawyer: Optional[int] = 0
+    occupation_manager: Optional[int] = 0
+    occupation_mechanic: Optional[int] = 0
+    occupation_media_manager: Optional[int] = 0
+    occupation_musician: Optional[int] = 0
+    occupation_scientist: Optional[int] = 0
+    occupation_teacher: Optional[int] = 0
+    occupation_writer: Optional[int] = 0
+
+# Define output schema
+class CreditScoreOutput(BaseModel):
+    prediction: str  # "Poor", "Standard", or "Good"
+    confidence: float
+    probabilities: dict
+
+# Simplified input for easier testing
+class SimpleCreditScoreInput(BaseModel):
+    age: int
+    annual_income: float
+    monthly_inhand_salary: float
+    credit_history_age: int
+    num_bank_accounts: int
+    num_credit_card: int
+    outstanding_debt: float
+    credit_utilization_ratio: float
+    occupation: str  # e.g., "Scientist", "Engineer", etc.
+
+@app.get("/")
+async def root():
+    return {"message": "Credit Score Prediction API is running!"}
+
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "model_loaded": model is not None,
+        "scaler_loaded": scaler is not None
+    }
+
+@app.post("/predict", response_model=CreditScoreOutput)
+async def predict_credit_score(input_data: CreditScoreInput):
+    try:
+        if model is None or scaler is None:
+            raise HTTPException(status_code=500, detail="Model or scaler not loaded")
+        
+        # Convert input to DataFrame
+        input_dict = input_data.dict()
+        input_df = pd.DataFrame([input_dict])
+        
+        # Scale the input data
+        input_scaled = scaler.transform(input_df)
+        
+        # Make prediction
+        prediction_probs = model.predict(input_scaled)
+        prediction_class = np.argmax(prediction_probs, axis=1)[0]
+        
+        # Map prediction to label
+        label_mapping = {0: "Poor", 1: "Standard", 2: "Good"}
+        prediction_label = label_mapping[prediction_class]
+        
+        # Get confidence (max probability)
+        confidence = float(np.max(prediction_probs))
+        
+        # Create probability dictionary
+        probabilities = {
+            "Poor": float(prediction_probs[0][0]),
+            "Standard": float(prediction_probs[0][1]),
+            "Good": float(prediction_probs[0][2])
+        }
+        
+        return CreditScoreOutput(
+            prediction=prediction_label,
+            confidence=confidence,
+            probabilities=probabilities
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
+
+@app.post("/predict_simple", response_model=CreditScoreOutput)
+async def predict_credit_score_simple(input_data: SimpleCreditScoreInput):
+    """
+    Simplified prediction endpoint with default values for most features
+    """
+    try:
+        if model is None or scaler is None:
+            raise HTTPException(status_code=500, detail="Model or scaler not loaded")
+        
+        # Create a full input with default values
+        full_input = {
+            'month': 1,  # January
+            'age': input_data.age,
+            'annual_income': input_data.annual_income,
+            'monthly_inhand_salary': input_data.monthly_inhand_salary,
+            'credit_history_age': input_data.credit_history_age,
+            'total_emi_per_month': input_data.monthly_inhand_salary * 0.3,  # Assume 30% of salary
+            'num_bank_accounts': input_data.num_bank_accounts,
+            'num_credit_card': input_data.num_credit_card,
+            'interest_rate': 15,  # Default interest rate
+            'num_of_loan': 2,  # Default number of loans
+            'delay_from_due_date': 5,  # Default delay
+            'num_of_delayed_payment': 3,  # Default delayed payments
+            'changed_credit_limit': 5.0,  # Default credit limit change
+            'num_credit_inquiries': 2,  # Default inquiries
+            'outstanding_debt': input_data.outstanding_debt,
+            'credit_utilization_ratio': input_data.credit_utilization_ratio,
+            'amount_invested_monthly': input_data.annual_income * 0.1 / 12,  # 10% of annual income
+            'monthly_balance': input_data.monthly_inhand_salary * 0.2,  # 20% of salary
+            'credit_mix': 1,  # Standard
+            'payment_of_min_amount': 1,  # Yes
+            'payment_behaviour': 3,  # Medium
+            
+            # Default loan types (no loan)
+            'auto_loan': 0,
+            'credit_builder_loan': 0,
+            'debt_consolidation_loan': 0,
+            'no_loan': 1,
+            'not_specified': 0,
+            'payday_loan': 0,
+            'personal_loan': 0,
+        }
+        
+        # Add occupation columns (all 0 except the specified one)
+        occupations = [
+            'accountant', 'architect', 'developer', 'doctor', 'engineer',
+            'entrepreneur', 'journalist', 'lawyer', 'manager', 'mechanic',
+            'media_manager', 'musician', 'scientist', 'teacher', 'writer'
+        ]
+        
+        for occ in occupations:
+            full_input[f'occupation_{occ}'] = 0
+        
+        # Set the specified occupation to 1
+        occupation_key = f"occupation_{input_data.occupation.lower()}"
+        if occupation_key in full_input:
+            full_input[occupation_key] = 1
+        
+        # Convert to DataFrame
+        input_df = pd.DataFrame([full_input])
+        
+        # Ensure columns are in the right order (46 features total)
+        # You might need to adjust this based on your actual feature order
+        
+        # Scale the input data
+        input_scaled = scaler.transform(input_df)
+        
+        # Make prediction
+        prediction_probs = model.predict(input_scaled)
+        prediction_class = np.argmax(prediction_probs, axis=1)[0]
+        
+        # Map prediction to label
+        label_mapping = {0: "Poor", 1: "Standard", 2: "Good"}
+        prediction_label = label_mapping[prediction_class]
+        
+        # Get confidence (max probability)
+        confidence = float(np.max(prediction_probs))
+        
+        # Create probability dictionary
+        probabilities = {
+            "Poor": float(prediction_probs[0][0]),
+            "Standard": float(prediction_probs[0][1]),
+            "Good": float(prediction_probs[0][2])
+        }
+        
+        return CreditScoreOutput(
+            prediction=prediction_label,
+            confidence=confidence,
+            probabilities=probabilities
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
+
+@app.get("/feature_info")
+async def get_feature_info():
+    """
+    Returns information about the features expected by the model
+    """
+    return {
+        "total_features": 46,
+        "required_features": {
+            "numerical": [
+                "month", "age", "annual_income", "monthly_inhand_salary",
+                "credit_history_age", "total_emi_per_month", "num_bank_accounts",
+                "num_credit_card", "interest_rate", "num_of_loan",
+                "delay_from_due_date", "num_of_delayed_payment",
+                "changed_credit_limit", "num_credit_inquiries",
+                "outstanding_debt", "credit_utilization_ratio",
+                "amount_invested_monthly", "monthly_balance"
+            ],
+            "categorical_encoded": [
+                "credit_mix", "payment_of_min_amount", "payment_behaviour"
+            ],
+            "loan_types": [
+                "auto_loan", "credit_builder_loan", "debt_consolidation_loan",
+                "no_loan", "not_specified", "payday_loan", "personal_loan"
+            ],
+            "occupations": [
+                "occupation_accountant", "occupation_architect", "occupation_developer",
+                "occupation_doctor", "occupation_engineer", "occupation_entrepreneur",
+                "occupation_journalist", "occupation_lawyer", "occupation_manager",
+                "occupation_mechanic", "occupation_media_manager", "occupation_musician",
+                "occupation_scientist", "occupation_teacher", "occupation_writer"
+            ]
+        },
+        "output_classes": {
+            "0": "Poor",
+            "1": "Standard",
+            "2": "Good"
+        }
+    }
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)

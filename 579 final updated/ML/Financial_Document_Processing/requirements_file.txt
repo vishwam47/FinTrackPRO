@@ -1,0 +1,30 @@
+# Core FastAPI dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# Google Gemini AI
+google-genai==0.3.0
+
+# Data processing
+pydantic==2.5.0
+pandas==2.1.4
+numpy==1.24.3
+
+# NLP and text processing
+spacy==3.7.2
+
+# Additional financial processing libraries (optional but recommended)
+python-dateutil==2.8.2
+regex==2023.10.3
+
+# Development dependencies (optional)
+pytest==7.4.3
+pytest-asyncio==0.21.1
+httpx==0.25.2
+
+# Optional: For enhanced financial data processing
+# Uncomment if you want additional capabilities:
+# invoice2data==0.4.5
+# sec-api==1.0.15
+# yfinance==0.2.28

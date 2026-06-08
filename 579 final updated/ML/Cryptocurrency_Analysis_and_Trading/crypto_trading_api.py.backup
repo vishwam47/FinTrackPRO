@@ -1,0 +1,1287 @@
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field, validator
+from typing import List, Optional, Dict, Any, Union
+from datetime import datetime, timedelta
+import logging
+import os
+import json
+import uuid
+import asyncio
+from enum import Enum
+import warnings
+warnings.filterwarnings('ignore')
+
+# Core libraries
+import httpx
+import pandas as pd
+import numpy as np
+from collections import defaultdict
+import time
+
+# Technical analysis
+try:
+    import pandas_ta as ta
+    PANDAS_TA_AVAILABLE = True
+except ImportError:
+    PANDAS_TA_AVAILABLE = False
+    print("pandas-ta not available - technical analysis features will be limited")
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="Cryptocurrency Analysis & Trading API",
+    description="Real-time crypto data, technical analysis, and portfolio tracking",
+    version="1.0.0"
+)
+
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Configuration
+class Settings:
+    COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
+    BINANCE_BASE_URL = "https://api.binance.com/api/v3"
+    DATA_DIR = "data/crypto"
+    RATE_LIMIT_PER_MINUTE = 30
+    CACHE_DURATION_SECONDS = 60
+
+settings = Settings()
+
+# Create data directory
+os.makedirs(settings.DATA_DIR, exist_ok=True)
+
+# Pydantic Models
+class CryptoCurrency(str, Enum):
+    BITCOIN = "bitcoin"
+    ETHEREUM = "ethereum"
+    BINANCECOIN = "binancecoin"
+    CARDANO = "cardano"
+    SOLANA = "solana"
+    POLKADOT = "polkadot"
+    DOGECOIN = "dogecoin"
+    AVALANCHE_2 = "avalanche-2"
+    POLYGON = "matic-network"
+    CHAINLINK = "chainlink"
+
+class TimeFrame(str, Enum):
+    MINUTE_1 = "1m"
+    MINUTE_5 = "5m"
+    MINUTE_15 = "15m"
+    HOUR_1 = "1h"
+    HOUR_4 = "4h"
+    DAY_1 = "1d"
+    WEEK_1 = "1w"
+
+class TechnicalIndicator(str, Enum):
+    SMA = "sma"
+    EMA = "ema"
+    RSI = "rsi"
+    MACD = "macd"
+    BOLLINGER_BANDS = "bb"
+    STOCHASTIC = "stoch"
+
+class AlertType(str, Enum):
+    PRICE_ABOVE = "price_above"
+    PRICE_BELOW = "price_below"
+    PERCENT_CHANGE = "percent_change"
+    TECHNICAL_SIGNAL = "technical_signal"
+
+class CryptoPrice(BaseModel):
+    symbol: str
+    name: str
+    current_price: float
+    market_cap: Optional[float]
+    volume_24h: Optional[float]
+    price_change_24h: Optional[float]
+    price_change_percentage_24h: Optional[float]
+    last_updated: str
+
+class Portfolio(BaseModel):
+    user_id: str
+    holdings: Dict[str, float]  # {symbol: quantity}
+    total_value_usd: float
+    total_change_24h: float
+    total_change_percentage_24h: float
+    created_at: str
+    updated_at: str
+
+class PortfolioHolding(BaseModel):
+    symbol: str = Field(..., description="Cryptocurrency symbol")
+    quantity: float = Field(..., gt=0, description="Amount owned")
+    purchase_price: Optional[float] = Field(None, description="Average purchase price")
+
+class PriceAlert(BaseModel):
+    alert_id: str
+    user_id: str
+    symbol: str
+    alert_type: AlertType
+    target_value: float
+    current_value: float
+    is_active: bool
+    created_at: str
+    triggered_at: Optional[str] = None
+
+class TechnicalAnalysis(BaseModel):
+    symbol: str
+    timeframe: TimeFrame
+    indicators: Dict[str, Any]
+    signals: Dict[str, str]  # buy/sell/hold signals
+    analysis_time: str
+
+class MarketData(BaseModel):
+    symbol: str
+    price_data: List[List[float]]  # [timestamp, open, high, low, close, volume]
+    indicators: Optional[Dict[str, List[float]]] = None
+
+# Rate Limiting and Caching
+class RateLimiter:
+    def __init__(self):
+        self.calls = []
+        self.max_calls_per_minute = settings.RATE_LIMIT_PER_MINUTE
+    
+    async def wait_if_needed(self):
+        now = time.time()
+        # Remove calls older than 1 minute
+        self.calls = [call_time for call_time in self.calls if now - call_time < 60]
+        
+        if len(self.calls) >= self.max_calls_per_minute:
+            sleep_time = 60 - (now - self.calls[0])
+            if sleep_time > 0:
+                logger.info(f"Rate limit reached, sleeping for {sleep_time:.2f} seconds")
+                await asyncio.sleep(sleep_time)
+        
+        self.calls.append(now)
+
+class CacheManager:
+    def __init__(self):
+        self.cache = {}
+        self.cache_timestamps = {}
+    
+    def get(self, key: str):
+        if key in self.cache:
+            if time.time() - self.cache_timestamps[key] < settings.CACHE_DURATION_SECONDS:
+                return self.cache[key]
+            else:
+                del self.cache[key]
+                del self.cache_timestamps[key]
+        return None
+    
+    def set(self, key: str, value: Any):
+        self.cache[key] = value
+        self.cache_timestamps[key] = time.time()
+
+# Initialize rate limiter and cache
+rate_limiter = RateLimiter()
+cache_manager = CacheManager()
+
+# File Storage Manager
+class CryptoStorageManager:
+    def __init__(self, base_dir: str):
+        self.base_dir = base_dir
+    
+    def get_user_dir(self, user_id: str) -> str:
+        user_dir = os.path.join(self.base_dir, user_id)
+        os.makedirs(user_dir, exist_ok=True)
+        return user_dir
+    
+    def save_portfolio(self, user_id: str, portfolio: Portfolio):
+        user_dir = self.get_user_dir(user_id)
+        file_path = os.path.join(user_dir, "portfolio.json")
+        
+        with open(file_path, "w") as f:
+            json.dump(portfolio.dict(), f, indent=2)
+    
+    def load_portfolio(self, user_id: str) -> Optional[Portfolio]:
+        user_dir = self.get_user_dir(user_id)
+        file_path = os.path.join(user_dir, "portfolio.json")
+        
+        if not os.path.exists(file_path):
+            return None
+        
+        try:
+            with open(file_path, "r") as f:
+                portfolio_data = json.load(f)
+            return Portfolio(**portfolio_data)
+        except Exception as e:
+            logger.error(f"Error loading portfolio for user {user_id}: {str(e)}")
+            return None
+    
+    def save_alerts(self, user_id: str, alerts: List[PriceAlert]):
+        user_dir = self.get_user_dir(user_id)
+        file_path = os.path.join(user_dir, "alerts.json")
+        
+        alerts_data = [alert.dict() for alert in alerts]
+        with open(file_path, "w") as f:
+            json.dump(alerts_data, f, indent=2)
+    
+    def load_alerts(self, user_id: str) -> List[PriceAlert]:
+        user_dir = self.get_user_dir(user_id)
+        file_path = os.path.join(user_dir, "alerts.json")
+        
+        if not os.path.exists(file_path):
+            return []
+        
+        try:
+            with open(file_path, "r") as f:
+                alerts_data = json.load(f)
+            return [PriceAlert(**alert) for alert in alerts_data]
+        except Exception as e:
+            logger.error(f"Error loading alerts for user {user_id}: {str(e)}")
+            return []
+
+# Initialize storage
+storage = CryptoStorageManager(settings.DATA_DIR)
+
+# Market Data Provider
+class CryptoDataProvider:
+    def __init__(self):
+        self.coingecko_url = settings.COINGECKO_BASE_URL
+        self.binance_url = settings.BINANCE_BASE_URL
+    
+    async def get_crypto_prices(self, symbols: List[str]) -> Dict[str, CryptoPrice]:
+        """Get current prices from CoinGecko API"""
+        cache_key = f"prices_{','.join(sorted(symbols))}"
+        cached_data = cache_manager.get(cache_key)
+        if cached_data:
+            return cached_data
+        
+        await rate_limiter.wait_if_needed()
+        
+        try:
+            url = f"{self.coingecko_url}/simple/price"
+            params = {
+                "ids": ",".join(symbols),
+                "vs_currencies": "usd",
+                "include_market_cap": "true",
+                "include_24hr_vol": "true",
+                "include_24hr_change": "true",
+                "include_last_updated_at": "true"
+            }
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, params=params)
+                response.raise_for_status()
+                data = response.json()
+            
+            # Convert to CryptoPrice objects
+            prices = {}
+            for symbol, price_data in data.items():
+                prices[symbol] = CryptoPrice(
+                    symbol=symbol,
+                    name=symbol.replace("-", " ").title(),
+                    current_price=price_data["usd"],
+                    market_cap=price_data.get("usd_market_cap"),
+                    volume_24h=price_data.get("usd_24h_vol"),
+                    price_change_24h=price_data.get("usd_24h_change"),
+                    price_change_percentage_24h=price_data.get("usd_24h_change"),
+                    last_updated=datetime.now().isoformat()
+                )
+            
+            cache_manager.set(cache_key, prices)
+            return prices
+            
+        except Exception as e:
+            logger.error(f"Error fetching prices from CoinGecko: {str(e)}")
+            # Fallback to Binance for basic price data
+            return await self._get_binance_fallback_prices(symbols)
+    
+    async def _get_binance_fallback_prices(self, symbols: List[str]) -> Dict[str, CryptoPrice]:
+        """Fallback to Binance API for basic price data"""
+        try:
+            url = f"{self.binance_url}/ticker/24hr"
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                data = response.json()
+            
+            # Map Binance symbols to CoinGecko format
+            symbol_mapping = {
+                "BTCUSDT": "bitcoin",
+                "ETHUSDT": "ethereum",
+                "BNBUSDT": "binancecoin",
+                "ADAUSDT": "cardano",
+                "SOLUSDT": "solana"
+            }
+            
+            prices = {}
+            for item in data:
+                binance_symbol = item["symbol"]
+                if binance_symbol in symbol_mapping:
+                    coingecko_symbol = symbol_mapping[binance_symbol]
+                    if coingecko_symbol in symbols:
+                        prices[coingecko_symbol] = CryptoPrice(
+                            symbol=coingecko_symbol,
+                            name=coingecko_symbol.replace("-", " ").title(),
+                            current_price=float(item["lastPrice"]),
+                            market_cap=None,
+                            volume_24h=float(item["volume"]),
+                            price_change_24h=float(item["priceChange"]),
+                            price_change_percentage_24h=float(item["priceChangePercent"]),
+                            last_updated=datetime.now().isoformat()
+                        )
+            
+            return prices
+            
+        except Exception as e:
+            logger.error(f"Binance fallback also failed: {str(e)}")
+            return {}
+    
+    async def get_historical_data(self, symbol: str, days: int = 30) -> List[List[float]]:
+        """Get historical price data from CoinGecko"""
+        cache_key = f"history_{symbol}_{days}"
+        cached_data = cache_manager.get(cache_key)
+        if cached_data:
+            return cached_data
+        
+        await rate_limiter.wait_if_needed()
+        
+        try:
+            url = f"{self.coingecko_url}/coins/{symbol}/market_chart"
+            params = {
+                "vs_currency": "usd",
+                "days": days,
+                "interval": "daily" if days > 90 else "hourly"
+            }
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, params=params)
+                response.raise_for_status()
+                data = response.json()
+            
+            # Convert to OHLC format (simplified - using price as OHLC)
+            prices = data["prices"]
+            volumes = data["total_volumes"]
+            
+            ohlc_data = []
+            for i, (timestamp, price) in enumerate(prices):
+                volume = volumes[i][1] if i < len(volumes) else 0
+                # Simplified OHLC where O=H=L=C=price
+                ohlc_data.append([timestamp, price, price, price, price, volume])
+            
+            cache_manager.set(cache_key, ohlc_data)
+            return ohlc_data
+            
+        except Exception as e:
+            logger.error(f"Error fetching historical data: {str(e)}")
+            return []
+    
+    async def get_trending_coins(self) -> List[Dict[str, Any]]:
+        """Get trending cryptocurrencies from CoinGecko"""
+        cache_key = "trending_coins"
+        cached_data = cache_manager.get(cache_key)
+        if cached_data:
+            return cached_data
+        
+        await rate_limiter.wait_if_needed()
+        
+        try:
+            url = f"{self.coingecko_url}/search/trending"
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                data = response.json()
+            
+            trending = []
+            for coin in data["coins"]:
+                trending.append({
+                    "id": coin["item"]["id"],
+                    "name": coin["item"]["name"],
+                    "symbol": coin["item"]["symbol"],
+                    "market_cap_rank": coin["item"]["market_cap_rank"],
+                    "thumb": coin["item"]["thumb"]
+                })
+            
+            cache_manager.set(cache_key, trending)
+            return trending
+            
+        except Exception as e:
+            logger.error(f"Error fetching trending coins: {str(e)}")
+            return []
+
+# Technical Analysis Engine
+class TechnicalAnalyzer:
+    def __init__(self):
+        self.indicators_available = PANDAS_TA_AVAILABLE
+    
+    def calculate_indicators(self, price_data: List[List[float]], indicators: List[str]) -> Dict[str, List[float]]:
+        """Calculate technical indicators using pandas-ta"""
+        if not self.indicators_available:
+            return {"error": "pandas-ta not available"}
+        
+        try:
+            # Convert price data to DataFrame
+            df = pd.DataFrame(price_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            
+            results = {}
+            
+            for indicator in indicators:
+                if indicator == "sma":
+                    results["sma_20"] = df.ta.sma(length=20).fillna(0).tolist()
+                    results["sma_50"] = df.ta.sma(length=50).fillna(0).tolist()
+                elif indicator == "ema":
+                    results["ema_12"] = df.ta.ema(length=12).fillna(0).tolist()
+                    results["ema_26"] = df.ta.ema(length=26).fillna(0).tolist()
+                elif indicator == "rsi":
+                    results["rsi"] = df.ta.rsi(length=14).fillna(50).tolist()
+                elif indicator == "macd":
+                    macd_data = df.ta.macd()
+                    if macd_data is not None:
+                        results["macd"] = macd_data.iloc[:, 0].fillna(0).tolist()
+                        results["macd_signal"] = macd_data.iloc[:, 1].fillna(0).tolist()
+                        results["macd_histogram"] = macd_data.iloc[:, 2].fillna(0).tolist()
+                elif indicator == "bb":
+                    bb_data = df.ta.bbands()
+                    if bb_data is not None:
+                        results["bb_upper"] = bb_data.iloc[:, 0].fillna(0).tolist()
+                        results["bb_middle"] = bb_data.iloc[:, 1].fillna(0).tolist()
+                        results["bb_lower"] = bb_data.iloc[:, 2].fillna(0).tolist()
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error calculating indicators: {str(e)}")
+            return {"error": str(e)}
+    
+    def generate_signals(self, indicators: Dict[str, List[float]]) -> Dict[str, str]:
+        """Generate buy/sell/hold signals based on indicators"""
+        signals = {}
+        
+        try:
+            # RSI signals
+            if "rsi" in indicators and indicators["rsi"]:
+                latest_rsi = indicators["rsi"][-1]
+                if latest_rsi < 30:
+                    signals["rsi"] = "buy"
+                elif latest_rsi > 70:
+                    signals["rsi"] = "sell"
+                else:
+                    signals["rsi"] = "hold"
+            
+            # MACD signals
+            if "macd" in indicators and "macd_signal" in indicators:
+                if len(indicators["macd"]) > 1 and len(indicators["macd_signal"]) > 1:
+                    macd_current = indicators["macd"][-1]
+                    macd_signal_current = indicators["macd_signal"][-1]
+                    macd_prev = indicators["macd"][-2]
+                    macd_signal_prev = indicators["macd_signal"][-2]
+                    
+                    # Bullish crossover
+                    if macd_prev <= macd_signal_prev and macd_current > macd_signal_current:
+                        signals["macd"] = "buy"
+                    # Bearish crossover
+                    elif macd_prev >= macd_signal_prev and macd_current < macd_signal_current:
+                        signals["macd"] = "sell"
+                    else:
+                        signals["macd"] = "hold"
+            
+            # SMA crossover signals
+            if "sma_20" in indicators and "sma_50" in indicators:
+                if len(indicators["sma_20"]) > 1 and len(indicators["sma_50"]) > 1:
+                    sma20_current = indicators["sma_20"][-1]
+                    sma50_current = indicators["sma_50"][-1]
+                    sma20_prev = indicators["sma_20"][-2]
+                    sma50_prev = indicators["sma_50"][-2]
+                    
+                    # Golden cross
+                    if sma20_prev <= sma50_prev and sma20_current > sma50_current:
+                        signals["sma_cross"] = "buy"
+                    # Death cross
+                    elif sma20_prev >= sma50_prev and sma20_current < sma50_current:
+                        signals["sma_cross"] = "sell"
+                    else:
+                        signals["sma_cross"] = "hold"
+            
+        except Exception as e:
+            logger.error(f"Error generating signals: {str(e)}")
+        
+        return signals
+
+# Portfolio Manager
+class PortfolioManager:
+    def __init__(self, data_provider: CryptoDataProvider):
+        self.data_provider = data_provider
+    
+    async def update_portfolio_value(self, user_id: str) -> Optional[Portfolio]:
+        """Update portfolio with current market prices"""
+        portfolio = storage.load_portfolio(user_id)
+        if not portfolio:
+            return None
+        
+        # Get current prices for all holdings
+        symbols = list(portfolio.holdings.keys())
+        if not symbols:
+            return portfolio
+        
+        current_prices = await self.data_provider.get_crypto_prices(symbols)
+        
+        total_value = 0
+        total_change_24h = 0
+        
+        for symbol, quantity in portfolio.holdings.items():
+            if symbol in current_prices:
+                price_data = current_prices[symbol]
+                holding_value = quantity * price_data.current_price
+                total_value += holding_value
+                
+                if price_data.price_change_24h:
+                    total_change_24h += quantity * price_data.price_change_24h
+        
+        # Update portfolio
+        portfolio.total_value_usd = total_value
+        portfolio.total_change_24h = total_change_24h
+        portfolio.total_change_percentage_24h = (total_change_24h / (total_value - total_change_24h)) * 100 if total_value > total_change_24h else 0
+        portfolio.updated_at = datetime.now().isoformat()
+        
+        # Save updated portfolio
+        storage.save_portfolio(user_id, portfolio)
+        
+        return portfolio
+
+# Alert Manager
+class AlertManager:
+    def __init__(self, data_provider: CryptoDataProvider):
+        self.data_provider = data_provider
+    
+    async def check_alerts(self, user_id: str) -> List[PriceAlert]:
+        """Check and trigger price alerts"""
+        alerts = storage.load_alerts(user_id)
+        if not alerts:
+            return []
+        
+        active_alerts = [alert for alert in alerts if alert.is_active]
+        if not active_alerts:
+            return []
+        
+        # Get current prices for all alert symbols
+        symbols = list(set(alert.symbol for alert in active_alerts))
+        current_prices = await self.data_provider.get_crypto_prices(symbols)
+        
+        triggered_alerts = []
+        
+        for alert in active_alerts:
+            if alert.symbol in current_prices:
+                current_price = current_prices[alert.symbol].current_price
+                alert.current_value = current_price
+                
+                should_trigger = False
+                
+                if alert.alert_type == AlertType.PRICE_ABOVE and current_price >= alert.target_value:
+                    should_trigger = True
+                elif alert.alert_type == AlertType.PRICE_BELOW and current_price <= alert.target_value:
+                    should_trigger = True
+                elif alert.alert_type == AlertType.PERCENT_CHANGE:
+                    price_data = current_prices[alert.symbol]
+                    if price_data.price_change_percentage_24h and abs(price_data.price_change_percentage_24h) >= alert.target_value:
+                        should_trigger = True
+                
+                if should_trigger:
+                    alert.is_active = False
+                    alert.triggered_at = datetime.now().isoformat()
+                    triggered_alerts.append(alert)
+        
+        # Save updated alerts
+        storage.save_alerts(user_id, alerts)
+        
+        return triggered_alerts
+
+# Initialize components
+data_provider = CryptoDataProvider()
+technical_analyzer = TechnicalAnalyzer()
+portfolio_manager = PortfolioManager(data_provider)
+alert_manager = AlertManager(data_provider)
+
+# API Endpoints
+
+@app.get("/")
+async def root():
+    """Root endpoint with API information"""
+    return {
+        "message": "Cryptocurrency Analysis & Trading API",
+        "version": "1.0.0",
+        "features": [
+            "Real-time Crypto Prices",
+            "Portfolio Tracking", 
+            "Technical Analysis",
+            "Price Alerts",
+            "Market Data",
+            "Trading Signals"
+        ],
+        "data_sources": ["CoinGecko API (Free)", "Binance API (Fallback)"],
+        "supported_cryptos": [crypto.value for crypto in CryptoCurrency],
+        "technical_indicators": [indicator.value for indicator in TechnicalIndicator],
+        "endpoints": {
+            "prices": "/crypto/prices",
+            "portfolio": "/crypto/portfolio/{user_id}",
+            "chart": "/crypto/chart/{symbol}",
+            "analysis": "/crypto/analysis/{symbol}",
+            "alerts": "/crypto/alerts",
+            "trending": "/crypto/trending",
+            "health": "/health"
+        }
+    }
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "services": {
+            "coingecko_api": "available",
+            "technical_analysis": "available" if PANDAS_TA_AVAILABLE else "limited",
+            "data_storage": "available"
+        },
+        "rate_limit": {
+            "calls_per_minute": settings.RATE_LIMIT_PER_MINUTE,
+            "cache_duration": settings.CACHE_DURATION_SECONDS
+        }
+    }
+
+# Market Data Endpoints
+@app.get("/crypto/prices")
+async def get_crypto_prices(
+    symbols: List[str] = Query(
+        default=["bitcoin", "ethereum", "binancecoin"],
+        description="Cryptocurrency symbols to fetch"
+    )
+):
+    """Get current prices for specified cryptocurrencies"""
+    try:
+        prices = await data_provider.get_crypto_prices(symbols)
+        
+        return {
+            "success": True,
+            "data": prices,
+            "count": len(prices),
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    except Exception as e:
+        logger.error(f"Error fetching prices: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch prices: {str(e)}")
+
+@app.get("/crypto/price/{symbol}")
+async def get_single_crypto_price(symbol: str):
+    """Get current price for a single cryptocurrency"""
+    try:
+        prices = await data_provider.get_crypto_prices([symbol])
+        
+        if symbol not in prices:
+            raise HTTPException(status_code=404, detail=f"Cryptocurrency '{symbol}' not found")
+        
+        return {
+            "success": True,
+            "data": prices[symbol],
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching price for {symbol}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch price: {str(e)}")
+
+@app.get("/crypto/chart/{symbol}")
+async def get_price_chart(
+    symbol: str,
+    days: int = Query(30, ge=1, le=365, description="Number of days of historical data"),
+    indicators: List[TechnicalIndicator] = Query(
+        default=[TechnicalIndicator.SMA, TechnicalIndicator.RSI],
+        description="Technical indicators to include"
+    )
+):
+    """Get price chart data with technical indicators"""
+    try:
+        # Get historical price data
+        price_data = await data_provider.get_historical_data(symbol, days)
+        
+        if not price_data:
+            raise HTTPException(status_code=404, detail=f"No historical data found for '{symbol}'")
+        
+        # Calculate technical indicators
+        indicator_names = [ind.value for ind in indicators]
+        calculated_indicators = technical_analyzer.calculate_indicators(price_data, indicator_names)
+        
+        # Generate trading signals
+        signals = technical_analyzer.generate_signals(calculated_indicators)
+        
+        return {
+            "success": True,
+            "data": {
+                "symbol": symbol,
+                "price_data": price_data,
+                "indicators": calculated_indicators,
+                "signals": signals,
+                "period_days": days
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching chart for {symbol}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch chart data: {str(e)}")
+
+@app.get("/crypto/trending")
+async def get_trending_cryptocurrencies():
+    """Get trending cryptocurrencies"""
+    try:
+        trending = await data_provider.get_trending_coins()
+        
+        return {
+            "success": True,
+            "data": trending,
+            "count": len(trending),
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    except Exception as e:
+        logger.error(f"Error fetching trending coins: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch trending coins: {str(e)}")
+
+# Portfolio Endpoints
+@app.get("/crypto/portfolio/{user_id}")
+async def get_user_portfolio(user_id: str):
+    """Get user's cryptocurrency portfolio"""
+    try:
+        portfolio = await portfolio_manager.update_portfolio_value(user_id)
+        
+        if not portfolio:
+            return {
+                "success": True,
+                "data": None,
+                "message": "No portfolio found for user"
+            }
+        
+        return {
+            "success": True,
+            "data": portfolio,
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    except Exception as e:
+        logger.error(f"Error fetching portfolio for {user_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch portfolio: {str(e)}")
+
+@app.post("/crypto/portfolio/{user_id}/add")
+async def add_to_portfolio(
+    user_id: str,
+    holding: PortfolioHolding
+):
+    """Add cryptocurrency to user's portfolio"""
+    try:
+        # Load existing portfolio or create new one
+        portfolio = storage.load_portfolio(user_id)
+        if not portfolio:
+            portfolio = Portfolio(
+                user_id=user_id,
+                holdings={},
+                total_value_usd=0,
+                total_change_24h=0,
+                total_change_percentage_24h=0,
+                created_at=datetime.now().isoformat(),
+                updated_at=datetime.now().isoformat()
+            )
+        
+        # Add or update holding
+        if holding.symbol in portfolio.holdings:
+            # Update existing holding (add to quantity)
+            portfolio.holdings[holding.symbol] += holding.quantity
+        else:
+            # Add new holding
+            portfolio.holdings[holding.symbol] = holding.quantity
+        
+        portfolio.updated_at = datetime.now().isoformat()
+        
+        # Update portfolio value with current prices
+        updated_portfolio = await portfolio_manager.update_portfolio_value(user_id)
+        
+        return {
+            "success": True,
+            "data": updated_portfolio,
+            "message": f"Added {holding.quantity} {holding.symbol} to portfolio"
+        }
+    
+    except Exception as e:
+        logger.error(f"Error adding to portfolio: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to add to portfolio: {str(e)}")
+
+@app.delete("/crypto/portfolio/{user_id}/{symbol}")
+async def remove_from_portfolio(
+    user_id: str,
+    symbol: str,
+    quantity: Optional[float] = Query(None, description="Quantity to remove (if not specified, removes all)")
+):
+    """Remove cryptocurrency from user's portfolio"""
+    try:
+        portfolio = storage.load_portfolio(user_id)
+        if not portfolio:
+            raise HTTPException(status_code=404, detail="Portfolio not found")
+        
+        if symbol not in portfolio.holdings:
+            raise HTTPException(status_code=404, detail=f"'{symbol}' not found in portfolio")
+        
+        if quantity is None:
+            # Remove entire holding
+            del portfolio.holdings[symbol]
+            message = f"Removed all {symbol} from portfolio"
+        else:
+            # Remove specified quantity
+            if quantity >= portfolio.holdings[symbol]:
+                del portfolio.holdings[symbol]
+                message = f"Removed all {symbol} from portfolio"
+            else:
+                portfolio.holdings[symbol] -= quantity
+                message = f"Removed {quantity} {symbol} from portfolio"
+        
+        portfolio.updated_at = datetime.now().isoformat()
+        
+        # Update portfolio value
+        updated_portfolio = await portfolio_manager.update_portfolio_value(user_id)
+        
+        return {
+            "success": True,
+            "data": updated_portfolio,
+            "message": message
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error removing from portfolio: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to remove from portfolio: {str(e)}")
+
+# Technical Analysis Endpoints
+@app.get("/crypto/analysis/{symbol}")
+async def get_technical_analysis(
+    symbol: str,
+    timeframe: TimeFrame = TimeFrame.DAY_1,
+    indicators: List[TechnicalIndicator] = Query(
+        default=[TechnicalIndicator.RSI, TechnicalIndicator.MACD, TechnicalIndicator.SMA],
+        description="Technical indicators to calculate"
+    )
+):
+    """Get comprehensive technical analysis for a cryptocurrency"""
+    try:
+        # Determine days based on timeframe
+        days_mapping = {
+            TimeFrame.MINUTE_1: 1,
+            TimeFrame.MINUTE_5: 1,
+            TimeFrame.MINUTE_15: 2,
+            TimeFrame.HOUR_1: 7,
+            TimeFrame.HOUR_4: 30,
+            TimeFrame.DAY_1: 90,
+            TimeFrame.WEEK_1: 365
+        }
+        
+        days = days_mapping.get(timeframe, 30)
+        
+        # Get historical data
+        price_data = await data_provider.get_historical_data(symbol, days)
+        if not price_data:
+            raise HTTPException(status_code=404, detail=f"No data available for '{symbol}'")
+        
+        # Calculate indicators
+        indicator_names = [ind.value for ind in indicators]
+        calculated_indicators = technical_analyzer.calculate_indicators(price_data, indicator_names)
+        
+        # Generate signals
+        signals = technical_analyzer.generate_signals(calculated_indicators)
+        
+        # Create analysis summary
+        analysis = TechnicalAnalysis(
+            symbol=symbol,
+            timeframe=timeframe,
+            indicators=calculated_indicators,
+            signals=signals,
+            analysis_time=datetime.now().isoformat()
+        )
+        
+        # Generate overall recommendation
+        buy_signals = sum(1 for signal in signals.values() if signal == "buy")
+        sell_signals = sum(1 for signal in signals.values() if signal == "sell")
+        
+        if buy_signals > sell_signals:
+            overall_signal = "buy"
+        elif sell_signals > buy_signals:
+            overall_signal = "sell"
+        else:
+            overall_signal = "hold"
+        
+        return {
+            "success": True,
+            "data": {
+                "analysis": analysis,
+                "overall_signal": overall_signal,
+                "signal_strength": abs(buy_signals - sell_signals) / max(len(signals), 1),
+                "summary": {
+                    "buy_signals": buy_signals,
+                    "sell_signals": sell_signals,
+                    "hold_signals": len(signals) - buy_signals - sell_signals
+                }
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error analyzing {symbol}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to analyze: {str(e)}")
+
+@app.get("/crypto/screener")
+async def crypto_screener(
+    min_market_cap: Optional[float] = Query(None, description="Minimum market cap"),
+    max_market_cap: Optional[float] = Query(None, description="Maximum market cap"),
+    min_volume: Optional[float] = Query(None, description="Minimum 24h volume"),
+    min_change: Optional[float] = Query(None, description="Minimum 24h price change %"),
+    max_change: Optional[float] = Query(None, description="Maximum 24h price change %"),
+    limit: int = Query(50, le=100, description="Maximum number of results")
+):
+    """Screen cryptocurrencies based on criteria"""
+    try:
+        # Get data for top cryptocurrencies
+        top_cryptos = [
+            "bitcoin", "ethereum", "binancecoin", "cardano", "solana",
+            "polkadot", "dogecoin", "avalanche-2", "matic-network", "chainlink",
+            "litecoin", "bitcoin-cash", "stellar", "vechain", "filecoin",
+            "tron", "ethereum-classic", "monero", "eos", "aave"
+        ]
+        
+        prices = await data_provider.get_crypto_prices(top_cryptos)
+        
+        # Apply filters
+        filtered_cryptos = []
+        for symbol, price_data in prices.items():
+            # Market cap filter
+            if min_market_cap and (not price_data.market_cap or price_data.market_cap < min_market_cap):
+                continue
+            if max_market_cap and (not price_data.market_cap or price_data.market_cap > max_market_cap):
+                continue
+            
+            # Volume filter
+            if min_volume and (not price_data.volume_24h or price_data.volume_24h < min_volume):
+                continue
+            
+            # Price change filter
+            if min_change and (not price_data.price_change_percentage_24h or price_data.price_change_percentage_24h < min_change):
+                continue
+            if max_change and (not price_data.price_change_percentage_24h or price_data.price_change_percentage_24h > max_change):
+                continue
+            
+            filtered_cryptos.append(price_data)
+        
+        # Sort by market cap (descending)
+        filtered_cryptos.sort(key=lambda x: x.market_cap or 0, reverse=True)
+        
+        # Limit results
+        filtered_cryptos = filtered_cryptos[:limit]
+        
+        return {
+            "success": True,
+            "data": filtered_cryptos,
+            "count": len(filtered_cryptos),
+            "filters_applied": {
+                "min_market_cap": min_market_cap,
+                "max_market_cap": max_market_cap,
+                "min_volume": min_volume,
+                "min_change": min_change,
+                "max_change": max_change
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    except Exception as e:
+        logger.error(f"Error screening cryptos: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to screen cryptocurrencies: {str(e)}")
+
+# Alert Endpoints
+@app.post("/crypto/alerts")
+async def create_price_alert(
+    user_id: str = Query(..., description="User ID"),
+    symbol: str = Query(..., description="Cryptocurrency symbol"),
+    alert_type: AlertType = Query(..., description="Type of alert"),
+    target_value: float = Query(..., description="Target price or percentage")
+):
+    """Create a new price alert"""
+    try:
+        # Validate symbol exists
+        prices = await data_provider.get_crypto_prices([symbol])
+        if symbol not in prices:
+            raise HTTPException(status_code=404, detail=f"Cryptocurrency '{symbol}' not found")
+        
+        current_price = prices[symbol].current_price
+        
+        # Create new alert
+        alert = PriceAlert(
+            alert_id=str(uuid.uuid4()),
+            user_id=user_id,
+            symbol=symbol,
+            alert_type=alert_type,
+            target_value=target_value,
+            current_value=current_price,
+            is_active=True,
+            created_at=datetime.now().isoformat()
+        )
+        
+        # Load existing alerts and add new one
+        alerts = storage.load_alerts(user_id)
+        alerts.append(alert)
+        storage.save_alerts(user_id, alerts)
+        
+        return {
+            "success": True,
+            "data": alert,
+            "message": f"Alert created for {symbol}"
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating alert: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create alert: {str(e)}")
+
+@app.get("/crypto/alerts/{user_id}")
+async def get_user_alerts(user_id: str):
+    """Get all alerts for a user"""
+    try:
+        alerts = storage.load_alerts(user_id)
+        
+        return {
+            "success": True,
+            "data": alerts,
+            "count": len(alerts),
+            "active_count": len([a for a in alerts if a.is_active]),
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    except Exception as e:
+        logger.error(f"Error fetching alerts: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch alerts: {str(e)}")
+
+@app.post("/crypto/alerts/check/{user_id}")
+async def check_user_alerts(user_id: str):
+    """Manually check and trigger user alerts"""
+    try:
+        triggered_alerts = await alert_manager.check_alerts(user_id)
+        
+        return {
+            "success": True,
+            "data": triggered_alerts,
+            "count": len(triggered_alerts),
+            "message": f"Checked alerts, {len(triggered_alerts)} triggered"
+        }
+    
+    except Exception as e:
+        logger.error(f"Error checking alerts: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to check alerts: {str(e)}")
+
+@app.delete("/crypto/alerts/{alert_id}")
+async def delete_alert(
+    alert_id: str,
+    user_id: str = Query(..., description="User ID")
+):
+    """Delete a specific alert"""
+    try:
+        alerts = storage.load_alerts(user_id)
+        
+        # Find and remove alert
+        updated_alerts = [alert for alert in alerts if alert.alert_id != alert_id]
+        
+        if len(updated_alerts) == len(alerts):
+            raise HTTPException(status_code=404, detail="Alert not found")
+        
+        storage.save_alerts(user_id, updated_alerts)
+        
+        return {
+            "success": True,
+            "message": "Alert deleted successfully"
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting alert: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete alert: {str(e)}")
+
+# Market Overview Endpoints
+@app.get("/crypto/market-overview")
+async def get_market_overview():
+    """Get comprehensive market overview"""
+    try:
+        # Get top cryptocurrencies
+        top_cryptos = [
+            "bitcoin", "ethereum", "binancecoin", "cardano", "solana",
+            "polkadot", "dogecoin", "avalanche-2", "matic-network", "chainlink"
+        ]
+        
+        prices = await data_provider.get_crypto_prices(top_cryptos)
+        trending = await data_provider.get_trending_coins()
+        
+        # Calculate market statistics
+        price_list = list(prices.values())
+        total_market_cap = sum(p.market_cap for p in price_list if p.market_cap)
+        total_volume = sum(p.volume_24h for p in price_list if p.volume_24h)
+        
+        # Top gainers and losers
+        gainers = sorted(
+            [p for p in price_list if p.price_change_percentage_24h],
+            key=lambda x: x.price_change_percentage_24h,
+            reverse=True
+        )[:5]
+        
+        losers = sorted(
+            [p for p in price_list if p.price_change_percentage_24h],
+            key=lambda x: x.price_change_percentage_24h
+        )[:5]
+        
+        return {
+            "success": True,
+            "data": {
+                "market_stats": {
+                    "total_market_cap": total_market_cap,
+                    "total_volume_24h": total_volume,
+                    "cryptocurrencies_tracked": len(prices)
+                },
+                "top_cryptocurrencies": price_list[:10],
+                "top_gainers": gainers,
+                "top_losers": losers,
+                "trending": trending[:10]
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    except Exception as e:
+        logger.error(f"Error fetching market overview: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch market overview: {str(e)}")
+
+# Utility Endpoints
+@app.get("/crypto/search/{query}")
+async def search_cryptocurrencies(query: str):
+    """Search for cryptocurrencies by name or symbol"""
+    try:
+        # Simple search implementation using predefined list
+        all_cryptos = {
+            "bitcoin": {"name": "Bitcoin", "symbol": "BTC"},
+            "ethereum": {"name": "Ethereum", "symbol": "ETH"},
+            "binancecoin": {"name": "BNB", "symbol": "BNB"},
+            "cardano": {"name": "Cardano", "symbol": "ADA"},
+            "solana": {"name": "Solana", "symbol": "SOL"},
+            "polkadot": {"name": "Polkadot", "symbol": "DOT"},
+            "dogecoin": {"name": "Dogecoin", "symbol": "DOGE"},
+            "avalanche-2": {"name": "Avalanche", "symbol": "AVAX"},
+            "matic-network": {"name": "Polygon", "symbol": "MATIC"},
+            "chainlink": {"name": "Chainlink", "symbol": "LINK"},
+            "litecoin": {"name": "Litecoin", "symbol": "LTC"},
+            "bitcoin-cash": {"name": "Bitcoin Cash", "symbol": "BCH"},
+            "stellar": {"name": "Stellar", "symbol": "XLM"},
+            "vechain": {"name": "VeChain", "symbol": "VET"},
+            "filecoin": {"name": "Filecoin", "symbol": "FIL"}
+        }
+        
+        query_lower = query.lower()
+        results = []
+        
+        for crypto_id, info in all_cryptos.items():
+            if (query_lower in info["name"].lower() or 
+                query_lower in info["symbol"].lower() or 
+                query_lower in crypto_id):
+                results.append({
+                    "id": crypto_id,
+                    "name": info["name"],
+                    "symbol": info["symbol"]
+                })
+        
+        return {
+            "success": True,
+            "data": results,
+            "count": len(results),
+            "query": query
+        }
+    
+    except Exception as e:
+        logger.error(f"Error searching cryptocurrencies: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to search: {str(e)}")
+
+# Background Tasks for Alert Monitoring
+@app.post("/crypto/start-alert-monitoring")
+async def start_alert_monitoring(background_tasks: BackgroundTasks):
+    """Start background monitoring of all active alerts"""
+    
+    async def monitor_alerts():
+        """Background task to monitor alerts for all users"""
+        while True:
+            try:
+                # Get all user directories
+                user_dirs = [d for d in os.listdir(settings.DATA_DIR) 
+                           if os.path.isdir(os.path.join(settings.DATA_DIR, d))]
+                
+                for user_id in user_dirs:
+                    try:
+                        triggered_alerts = await alert_manager.check_alerts(user_id)
+                        if triggered_alerts:
+                            logger.info(f"User {user_id}: {len(triggered_alerts)} alerts triggered")
+                            # Here you could send notifications (email, push, etc.)
+                    except Exception as e:
+                        logger.error(f"Error checking alerts for user {user_id}: {str(e)}")
+                
+                # Wait 5 minutes before next check
+                await asyncio.sleep(300)
+                
+            except Exception as e:
+                logger.error(f"Error in alert monitoring: {str(e)}")
+                await asyncio.sleep(60)  # Wait 1 minute on error
+    
+    background_tasks.add_task(monitor_alerts)
+    
+    return {
+        "success": True,
+        "message": "Alert monitoring started in background"
+    }
+
+# Error Handlers
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc):
+    return {
+        "success": False,
+        "error": exc.detail,
+        "status_code": exc.status_code,
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request, exc):
+    logger.error(f"Unexpected error: {str(exc)}")
+    return {
+        "success": False,
+        "error": "Internal server error",
+        "status_code": 500,
+        "timestamp": datetime.now().isoformat()
+    }
+
+# Startup event
+@app.on_event("startup")
+async def startup_event():
+    logger.info("Cryptocurrency Analysis & Trading API started")
+    logger.info(f"Data directory: {settings.DATA_DIR}")
+    logger.info(f"Technical analysis available: {PANDAS_TA_AVAILABLE}")
+    logger.info(f"Rate limit: {settings.RATE_LIMIT_PER_MINUTE} calls/minute")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8002)

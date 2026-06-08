@@ -1,0 +1,1580 @@
+from fastapi import FastAPI, HTTPException, Query, File, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any, Union
+import httpx
+import pandas as pd
+import json
+import logging
+from datetime import datetime, timedelta
+import io
+import os
+from enum import Enum
+import statistics
+from collections import defaultdict
+import uuid
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="Personal Finance AI API",
+    description="API for automated expense categorization and financial insights",
+    version="2.0.0"
+)
+
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure based on your frontend
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Configuration
+class Settings:
+    FINA_API_URL = "https://app.fina.money/api/resource/categorize"
+    FINA_API_KEY = os.getenv("FINA_API_KEY", "fina-api-test")
+    PARTNER_ID = os.getenv("PARTNER_ID", "your-partner-id")
+    DATA_DIR = "data/users"
+
+settings = Settings()
+
+# Create data directory if it doesn't exist
+os.makedirs(settings.DATA_DIR, exist_ok=True)
+
+# Pydantic Models
+class TransactionInput(BaseModel):
+    name: str = Field(..., description="Transaction description/merchant name")
+    merchant: Optional[str] = Field(None, description="Merchant name (optional)")
+    amount: float = Field(..., description="Transaction amount (negative for expenses)")
+    date: Optional[str] = Field(None, description="Transaction date (YYYY-MM-DD)")
+    account: Optional[str] = Field(None, description="Account name")
+
+class FinaAPIRequest(BaseModel):
+    name: str
+    merchant: Optional[str] = None
+    amount: float
+
+class CategoryResponse(BaseModel):
+    category: str
+    subcategory: Optional[str] = None
+    confidence: Optional[float] = None
+
+class CategorizedTransaction(BaseModel):
+    original_transaction: TransactionInput
+    category: str
+    subcategory: Optional[str] = None
+    confidence: Optional[float] = None
+    fina_response: Optional[Dict] = None
+
+class StoredTransaction(BaseModel):
+    transaction_id: str
+    name: str
+    merchant: Optional[str]
+    amount: float
+    date: Optional[str]
+    account: Optional[str]
+    category: str
+    subcategory: Optional[str]
+    confidence: Optional[float]
+    fina_response: Optional[Dict]
+    created_at: str
+    updated_at: str
+
+# Budget Models
+class BudgetRule(str, Enum):
+    FIFTY_THIRTY_TWENTY = "50_30_20"
+    ZERO_BASED = "zero_based"
+    ENVELOPE = "envelope"
+    CUSTOM = "custom"
+
+class SpendingInsight(BaseModel):
+    category: str
+    current_monthly_avg: float
+    recommended_budget: float
+    variance_percentage: float
+    trend: str
+    recommendation: str
+
+class BudgetRecommendation(BaseModel):
+    rule_applied: BudgetRule
+    monthly_income: float
+    total_expenses: float
+    recommended_allocations: Dict[str, float]
+    insights: List[SpendingInsight]
+    savings_potential: float
+    emergency_fund_months: float
+    debt_to_income_ratio: Optional[float]
+    recommendations: List[str]
+
+class UserFinancialProfile(BaseModel):
+    monthly_income: float
+    fixed_expenses: Optional[float] = None
+    financial_goals: Optional[List[str]] = []
+    risk_tolerance: Optional[str] = "moderate"
+    current_savings: Optional[float] = None
+    debt_amount: Optional[float] = None
+
+# Savings Goal Models
+class GoalType(str, Enum):
+    EMERGENCY_FUND = "emergency_fund"
+    VACATION = "vacation"
+    HOME_DOWN_PAYMENT = "home_down_payment"
+    DEBT_PAYOFF = "debt_payoff"
+    RETIREMENT = "retirement"
+    EDUCATION = "education"
+    CUSTOM = "custom"
+
+class SavingsGoal(BaseModel):
+    goal_id: str
+    name: str
+    goal_type: GoalType
+    target_amount: float
+    current_amount: float = 0
+    target_date: Optional[str] = None
+    monthly_contribution: Optional[float] = None
+    priority: int = Field(1, ge=1, le=5)
+    created_at: str
+    updated_at: str
+
+class SavingsGoalCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    goal_type: GoalType
+    target_amount: float = Field(..., gt=0)
+    target_date: Optional[str] = None
+    monthly_contribution: Optional[float] = Field(None, gt=0)
+    priority: int = Field(3, ge=1, le=5)
+
+class GoalOptimization(BaseModel):
+    goal: SavingsGoal
+    recommended_monthly_amount: float
+    months_to_completion: int
+    optimization_strategy: str
+    progress_percentage: float
+    recommendations: List[str]
+
+# Bill Models
+class RecurringBill(BaseModel):
+    bill_id: str
+    merchant_name: str
+    category: str
+    average_amount: float
+    frequency: str
+    next_due_date: str
+    last_amount: float
+    confidence_score: float
+    created_at: str
+    updated_at: str
+
+class BillPrediction(BaseModel):
+    bill: RecurringBill
+    predicted_amount: float
+    predicted_date: str
+    variance_range: Dict[str, float]
+    payment_recommendation: str
+
+# Insights Models
+class FinancialInsight(BaseModel):
+    insight_id: str
+    insight_type: str
+    title: str
+    description: str
+    category: Optional[str] = None
+    amount_impact: Optional[float] = None
+    priority: str
+    action_items: List[str]
+    created_at: str
+    is_read: bool = False
+
+class PersonalizedInsights(BaseModel):
+    user_id: str
+    monthly_summary: Dict[str, Any]
+    spending_insights: List[SpendingInsight]
+    savings_opportunities: List[str]
+    financial_health_score: float
+    recommendations: List[str]
+    generated_at: str
+
+# API Version Enum
+class APIVersion(str, Enum):
+    v2 = "v2"
+    v3 = "v3"
+
+# File Storage Manager
+class FileStorageManager:
+    def __init__(self, base_dir: str):
+        self.base_dir = base_dir
+    
+    def get_user_dir(self, user_id: str) -> str:
+        user_dir = os.path.join(self.base_dir, user_id)
+        os.makedirs(user_dir, exist_ok=True)
+        return user_dir
+    
+    def save_transactions(self, user_id: str, transactions: List[StoredTransaction]):
+        """Save transactions to JSON file"""
+        user_dir = self.get_user_dir(user_id)
+        file_path = os.path.join(user_dir, "transactions.json")
+        
+        data = {
+            "user_id": user_id,
+            "last_updated": datetime.now().isoformat(),
+            "transactions": [t.dict() for t in transactions],
+            "metadata": {
+                "total_transactions": len(transactions),
+                "date_range": self._get_date_range(transactions)
+            }
+        }
+        
+        with open(file_path, "w") as f:
+            json.dump(data, f, indent=2)
+    
+    def load_transactions(self, user_id: str) -> List[StoredTransaction]:
+        """Load transactions from JSON file"""
+        user_dir = self.get_user_dir(user_id)
+        file_path = os.path.join(user_dir, "transactions.json")
+        
+        if not os.path.exists(file_path):
+            return []
+        
+        try:
+            with open(file_path, "r") as f:
+                data = json.load(f)
+            
+            return [StoredTransaction(**txn) for txn in data.get("transactions", [])]
+        except Exception as e:
+            logger.error(f"Error loading transactions for user {user_id}: {str(e)}")
+            return []
+    
+    def save_goals(self, user_id: str, goals: List[SavingsGoal]):
+        """Save goals to JSON file"""
+        user_dir = self.get_user_dir(user_id)
+        file_path = os.path.join(user_dir, "goals.json")
+        
+        data = {
+            "user_id": user_id,
+            "last_updated": datetime.now().isoformat(),
+            "goals": [g.dict() for g in goals]
+        }
+        
+        with open(file_path, "w") as f:
+            json.dump(data, f, indent=2)
+    
+    def load_goals(self, user_id: str) -> List[SavingsGoal]:
+        """Load goals from JSON file"""
+        user_dir = self.get_user_dir(user_id)
+        file_path = os.path.join(user_dir, "goals.json")
+        
+        if not os.path.exists(file_path):
+            return []
+        
+        try:
+            with open(file_path, "r") as f:
+                data = json.load(f)
+            
+            return [SavingsGoal(**goal) for goal in data.get("goals", [])]
+        except Exception as e:
+            logger.error(f"Error loading goals for user {user_id}: {str(e)}")
+            return []
+    
+    def save_bills(self, user_id: str, bills: List[RecurringBill]):
+        """Save bills to JSON file"""
+        user_dir = self.get_user_dir(user_id)
+        file_path = os.path.join(user_dir, "bills.json")
+        
+        data = {
+            "user_id": user_id,
+            "last_updated": datetime.now().isoformat(),
+            "bills": [b.dict() for b in bills]
+        }
+        
+        with open(file_path, "w") as f:
+            json.dump(data, f, indent=2)
+    
+    def load_bills(self, user_id: str) -> List[RecurringBill]:
+        """Load bills from JSON file"""
+        user_dir = self.get_user_dir(user_id)
+        file_path = os.path.join(user_dir, "bills.json")
+        
+        if not os.path.exists(file_path):
+            return []
+        
+        try:
+            with open(file_path, "r") as f:
+                data = json.load(f)
+            
+            return [RecurringBill(**bill) for bill in data.get("bills", [])]
+        except Exception as e:
+            logger.error(f"Error loading bills for user {user_id}: {str(e)}")
+            return []
+    
+    def save_insights(self, user_id: str, insights: PersonalizedInsights):
+        """Save insights to JSON file"""
+        user_dir = self.get_user_dir(user_id)
+        file_path = os.path.join(user_dir, "insights.json")
+        
+        with open(file_path, "w") as f:
+            json.dump(insights.dict(), f, indent=2)
+    
+    def load_insights(self, user_id: str) -> Optional[PersonalizedInsights]:
+        """Load insights from JSON file"""
+        user_dir = self.get_user_dir(user_id)
+        file_path = os.path.join(user_dir, "insights.json")
+        
+        if not os.path.exists(file_path):
+            return None
+        
+        try:
+            with open(file_path, "r") as f:
+                data = json.load(f)
+            
+            return PersonalizedInsights(**data)
+        except Exception as e:
+            logger.error(f"Error loading insights for user {user_id}: {str(e)}")
+            return None
+    
+    def _get_date_range(self, transactions: List[StoredTransaction]) -> Dict[str, str]:
+        """Get date range from transactions"""
+        if not transactions:
+            return {"start": None, "end": None}
+        
+        dates = [t.date for t in transactions if t.date]
+        if not dates:
+            return {"start": None, "end": None}
+        
+        return {
+            "start": min(dates),
+            "end": max(dates)
+        }
+
+# Initialize storage manager
+storage = FileStorageManager(settings.DATA_DIR)
+
+# Budget Analysis Functions
+class BudgetAnalyzer:
+    """Smart budget analysis and recommendation engine"""
+    
+    CATEGORY_BENCHMARKS = {
+        "Housing": {"min": 25, "max": 35, "ideal": 30},
+        "Transportation": {"min": 10, "max": 20, "ideal": 15},
+        "Food": {"min": 8, "max": 15, "ideal": 12},
+        "Utilities": {"min": 5, "max": 10, "ideal": 8},
+        "Insurance": {"min": 5, "max": 12, "ideal": 8},
+        "Healthcare": {"min": 5, "max": 15, "ideal": 8},
+        "Entertainment": {"min": 2, "max": 8, "ideal": 5},
+        "Personal Care": {"min": 1, "max": 5, "ideal": 3},
+        "Shopping": {"min": 3, "max": 10, "ideal": 6},
+        "Miscellaneous": {"min": 2, "max": 8, "ideal": 5}
+    }
+    
+    def __init__(self):
+        self.category_mappings = {
+            "rent": "Housing", "mortgage": "Housing", "utilities": "Utilities",
+            "gas": "Transportation", "fuel": "Transportation", "car": "Transportation",
+            "groceries": "Food", "restaurant": "Food", "dining": "Food",
+            "insurance": "Insurance", "health": "Healthcare", "medical": "Healthcare",
+            "entertainment": "Entertainment", "shopping": "Shopping",
+            "personal": "Personal Care", "misc": "Miscellaneous"
+        }
+    
+    def analyze_spending_patterns(self, transactions: List[StoredTransaction], months: int = 6) -> Dict:
+        """Analyze historical spending patterns"""
+        
+        cutoff_date = datetime.now() - timedelta(days=months * 30)
+        recent_transactions = []
+        
+        for txn in transactions:
+            if txn.date:
+                try:
+                    txn_date = datetime.strptime(txn.date, "%Y-%m-%d")
+                    if txn_date >= cutoff_date:
+                        recent_transactions.append(txn)
+                except:
+                    recent_transactions.append(txn)
+            else:
+                recent_transactions.append(txn)
+        
+        category_spending = defaultdict(list)
+        monthly_totals = defaultdict(float)
+        income_total = 0
+        
+        for txn in recent_transactions:
+            amount = abs(txn.amount)
+            category = self._normalize_category(txn.category)
+            
+            if txn.amount > 0:
+                income_total += txn.amount
+            else:
+                category_spending[category].append(amount)
+                
+                if txn.date:
+                    try:
+                        month_key = txn.date[:7]
+                        monthly_totals[month_key] += amount
+                    except:
+                        pass
+        
+        category_analysis = {}
+        total_monthly_expenses = 0
+        
+        for category, amounts in category_spending.items():
+            if amounts:
+                monthly_avg = sum(amounts) / max(months, 1)
+                total_monthly_expenses += monthly_avg
+                
+                trend = "stable"
+                if len(amounts) >= 3:
+                    recent_avg = statistics.mean(amounts[-3:])
+                    earlier_avg = statistics.mean(amounts[:-3]) if len(amounts) > 3 else recent_avg
+                    
+                    if recent_avg > earlier_avg * 1.1:
+                        trend = "increasing"
+                    elif recent_avg < earlier_avg * 0.9:
+                        trend = "decreasing"
+                
+                category_analysis[category] = {
+                    "monthly_average": monthly_avg,
+                    "total_spent": sum(amounts),
+                    "transaction_count": len(amounts),
+                    "trend": trend,
+                    "min_amount": min(amounts),
+                    "max_amount": max(amounts)
+                }
+        
+        estimated_monthly_income = income_total / max(months, 1) if income_total > 0 else 0
+        
+        return {
+            "category_analysis": category_analysis,
+            "total_monthly_expenses": total_monthly_expenses,
+            "estimated_monthly_income": estimated_monthly_income,
+            "analysis_period_months": months,
+            "total_transactions": len(recent_transactions)
+        }
+    
+    def generate_budget_recommendation(self, 
+                                     spending_analysis: Dict, 
+                                     user_profile: UserFinancialProfile,
+                                     budget_rule: BudgetRule) -> BudgetRecommendation:
+        """Generate smart budget recommendations"""
+        
+        monthly_income = user_profile.monthly_income or spending_analysis["estimated_monthly_income"]
+        current_expenses = spending_analysis["total_monthly_expenses"]
+        category_analysis = spending_analysis["category_analysis"]
+        
+        if budget_rule == BudgetRule.FIFTY_THIRTY_TWENTY:
+            recommended_allocations = self._apply_50_30_20_rule(monthly_income)
+        elif budget_rule == BudgetRule.ZERO_BASED:
+            recommended_allocations = self._apply_zero_based_budgeting(monthly_income, category_analysis)
+        elif budget_rule == BudgetRule.ENVELOPE:
+            recommended_allocations = self._apply_envelope_method(monthly_income, category_analysis)
+        else:
+            recommended_allocations = self._create_custom_budget(monthly_income, category_analysis)
+        
+        insights = []
+        for category, analysis in category_analysis.items():
+            insight = self._generate_category_insight(
+                category, analysis, recommended_allocations.get(category, 0), monthly_income
+            )
+            insights.append(insight)
+        
+        savings_potential = monthly_income - current_expenses
+        emergency_fund_months = (user_profile.current_savings or 0) / max(current_expenses, 1)
+        debt_to_income = (user_profile.debt_amount or 0) / max(monthly_income, 1) if monthly_income > 0 else None
+        
+        recommendations = self._generate_recommendations(
+            monthly_income, current_expenses, savings_potential, 
+            debt_to_income, emergency_fund_months, category_analysis
+        )
+        
+        return BudgetRecommendation(
+            rule_applied=budget_rule,
+            monthly_income=monthly_income,
+            total_expenses=current_expenses,
+            recommended_allocations=recommended_allocations,
+            insights=insights,
+            savings_potential=savings_potential,
+            emergency_fund_months=emergency_fund_months,
+            debt_to_income_ratio=debt_to_income,
+            recommendations=recommendations
+        )
+    
+    def _normalize_category(self, category: str) -> str:
+        """Normalize category names to standard categories"""
+        category_lower = category.lower().strip()
+        
+        for key, standard_category in self.category_mappings.items():
+            if key in category_lower:
+                return standard_category
+        
+        return category.title()
+    
+    def _apply_50_30_20_rule(self, monthly_income: float) -> Dict[str, float]:
+        """Apply the 50/30/20 budgeting rule"""
+        return {
+            "Needs (Housing, Food, Utilities)": monthly_income * 0.50,
+            "Wants (Entertainment, Shopping)": monthly_income * 0.30,
+            "Savings & Debt Payment": monthly_income * 0.20,
+            "Housing": monthly_income * 0.30,
+            "Food": monthly_income * 0.12,
+            "Transportation": monthly_income * 0.15,
+            "Utilities": monthly_income * 0.08,
+            "Entertainment": monthly_income * 0.08,
+            "Shopping": monthly_income * 0.07,
+            "Healthcare": monthly_income * 0.08,
+            "Insurance": monthly_income * 0.08,
+            "Personal Care": monthly_income * 0.03,
+            "Miscellaneous": monthly_income * 0.05
+        }
+    
+    def _apply_zero_based_budgeting(self, monthly_income: float, category_analysis: Dict) -> Dict[str, float]:
+        """Apply zero-based budgeting"""
+        allocations = {}
+        remaining_income = monthly_income
+        
+        priority_categories = [
+            "Housing", "Food", "Utilities", "Transportation", "Insurance",
+            "Healthcare", "Debt Payment", "Emergency Fund", "Entertainment",
+            "Shopping", "Personal Care", "Miscellaneous"
+        ]
+        
+        for category in priority_categories:
+            if category in category_analysis:
+                historical_avg = category_analysis[category]["monthly_average"]
+                allocation = min(historical_avg * 1.1, remaining_income * 0.2)
+                allocations[category] = allocation
+                remaining_income -= allocation
+        
+        if remaining_income > 0:
+            allocations["Savings"] = remaining_income
+        
+        return allocations
+    
+    def _apply_envelope_method(self, monthly_income: float, category_analysis: Dict) -> Dict[str, float]:
+        """Apply envelope budgeting method"""
+        allocations = {}
+        
+        total_historical = sum(cat["monthly_average"] for cat in category_analysis.values())
+        
+        if total_historical > 0:
+            available_for_expenses = monthly_income * 0.8
+            
+            for category, analysis in category_analysis.items():
+                proportion = analysis["monthly_average"] / total_historical
+                allocations[category] = available_for_expenses * proportion
+        
+        allocations["Savings"] = monthly_income * 0.2
+        
+        return allocations
+    
+    def _create_custom_budget(self, monthly_income: float, category_analysis: Dict) -> Dict[str, float]:
+        """Create custom budget based on spending patterns and benchmarks"""
+        allocations = {}
+        
+        for category, analysis in category_analysis.items():
+            current_spending = analysis["monthly_average"]
+            
+            benchmark = self.CATEGORY_BENCHMARKS.get(category, {"ideal": 5})
+            ideal_percentage = benchmark["ideal"] / 100
+            ideal_amount = monthly_income * ideal_percentage
+            
+            recommended = (current_spending * 0.7) + (ideal_amount * 0.3)
+            allocations[category] = min(recommended, monthly_income * 0.25)
+        
+        total_allocated = sum(allocations.values())
+        savings_allocation = max(monthly_income - total_allocated, monthly_income * 0.1)
+        allocations["Savings"] = savings_allocation
+        
+        return allocations
+    
+    def _generate_category_insight(self, category: str, analysis: Dict, 
+                                 recommended_budget: float, monthly_income: float) -> SpendingInsight:
+        """Generate insights for a specific spending category"""
+        current_avg = analysis["monthly_average"]
+        variance = ((current_avg - recommended_budget) / max(recommended_budget, 1)) * 100
+        
+        if variance > 20:
+            recommendation = f"Consider reducing {category} spending by ${current_avg - recommended_budget:.0f}/month"
+        elif variance < -10:
+            recommendation = f"You have room to increase {category} budget by ${recommended_budget - current_avg:.0f}/month"
+        else:
+            recommendation = f"Your {category} spending is well-balanced"
+        
+        return SpendingInsight(
+            category=category,
+            current_monthly_avg=current_avg,
+            recommended_budget=recommended_budget,
+            variance_percentage=variance,
+            trend=analysis["trend"],
+            recommendation=recommendation
+        )
+    
+    def _generate_recommendations(self, monthly_income: float, current_expenses: float,
+                                savings_potential: float, debt_to_income: Optional[float],
+                                emergency_fund_months: float, category_analysis: Dict) -> List[str]:
+        """Generate personalized financial recommendations"""
+        recommendations = []
+        
+        if savings_potential < monthly_income * 0.1:
+            recommendations.append("💰 Try to save at least 10% of your income each month")
+        elif savings_potential > monthly_income * 0.3:
+            recommendations.append("🎉 Great job! You have excellent savings potential")
+        
+        if emergency_fund_months < 3:
+            recommendations.append("🚨 Build an emergency fund covering 3-6 months of expenses")
+        elif emergency_fund_months >= 6:
+            recommendations.append("✅ Excellent emergency fund! Consider investing excess savings")
+        
+        if debt_to_income and debt_to_income > 0.4:
+            recommendations.append("⚠️ High debt-to-income ratio. Focus on debt reduction")
+        elif debt_to_income and debt_to_income < 0.2:
+            recommendations.append("✅ Good debt management. Keep it up!")
+        
+        for category, analysis in category_analysis.items():
+            if category in self.CATEGORY_BENCHMARKS:
+                current_percentage = (analysis["monthly_average"] / monthly_income) * 100
+                benchmark = self.CATEGORY_BENCHMARKS[category]
+                
+                if current_percentage > benchmark["max"]:
+                    recommendations.append(f"📊 {category} spending is {current_percentage:.1f}% of income (recommended: {benchmark['ideal']}%)")
+        
+        increasing_categories = [cat for cat, analysis in category_analysis.items() 
+                               if analysis["trend"] == "increasing"]
+        if increasing_categories:
+            recommendations.append(f"📈 Monitor increasing spending in: {', '.join(increasing_categories)}")
+        
+        return recommendations[:8]
+
+# Initialize analyzers
+budget_analyzer = BudgetAnalyzer()
+
+# Helper Functions
+async def call_fina_api(
+    transactions: List[FinaAPIRequest], 
+    api_version: APIVersion = APIVersion.v2,
+    enable_mapping: bool = False
+) -> Dict[str, Any]:
+    """Call Fina API for transaction categorization"""
+    
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": settings.FINA_API_KEY,
+        "x-partner-id": settings.PARTNER_ID,
+        "x-api-model": api_version.value,
+        "x-api-mapping": str(enable_mapping).lower()
+    }
+    
+    payload = [
+        {
+            "name": txn.name,
+            "merchant": txn.merchant or "",
+            "amount": txn.amount
+        }
+        for txn in transactions
+    ]
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                settings.FINA_API_URL,
+                headers=headers,
+                json=payload
+            )
+            response.raise_for_status()
+            return response.json()
+    
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Fina API HTTP error: {e.response.status_code} - {e.response.text}")
+        raise HTTPException(
+            status_code=e.response.status_code,
+            detail=f"Fina API error: {e.response.text}"
+        )
+    except httpx.RequestError as e:
+        logger.error(f"Fina API request error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to connect to Fina API: {str(e)}"
+        )
+
+def process_fina_response(transactions: List[TransactionInput], fina_response: List[Dict]) -> List[CategorizedTransaction]:
+    """Process Fina API response and match with original transactions"""
+    categorized = []
+    
+    for i, (transaction, response) in enumerate(zip(transactions, fina_response)):
+        try:
+            category = response.get('category', 'Unknown')
+            subcategory = response.get('subcategory')
+            confidence = response.get('confidence')
+            
+            categorized.append(CategorizedTransaction(
+                original_transaction=transaction,
+                category=category,
+                subcategory=subcategory,
+                confidence=confidence,
+                fina_response=response
+            ))
+        except Exception as e:
+            logger.error(f"Error processing transaction {i}: {str(e)}")
+            categorized.append(CategorizedTransaction(
+                original_transaction=transaction,
+                category="Error",
+                subcategory=None,
+                confidence=None,
+                fina_response={"error": str(e)}
+            ))
+    
+    return categorized
+
+def parse_csv_transactions(file_content: bytes) -> List[TransactionInput]:
+    """Parse CSV file and extract transactions"""
+    try:
+        df = pd.read_csv(io.StringIO(file_content.decode('utf-8')))
+        
+        column_mappings = {
+            'description': ['description', 'desc', 'transaction', 'merchant', 'name'],
+            'merchant': ['merchant', 'merchant_name', 'payee', 'vendor'],
+            'amount': ['amount', 'debit', 'credit', 'value', 'transaction_amount'],
+            'date': ['date', 'transaction_date', 'posted_date', 'created_date'],
+            'account': ['account', 'account_name', 'account_number']
+        }
+        
+        actual_columns = {}
+        for field, possible_names in column_mappings.items():
+            for col in df.columns:
+                if col.lower().strip() in [name.lower() for name in possible_names]:
+                    actual_columns[field] = col
+                    break
+        
+        transactions = []
+        for _, row in df.iterrows():
+            name = str(row.get(actual_columns.get('description', df.columns[0]), '')).strip()
+            amount = float(row.get(actual_columns.get('amount', df.columns[1]), 0))
+            
+            merchant = str(row.get(actual_columns.get('merchant', ''), '')).strip() or None
+            date = str(row.get(actual_columns.get('date', ''), '')).strip() or None
+            account = str(row.get(actual_columns.get('account', ''), '')).strip() or None
+            
+            if name and amount != 0:
+                transactions.append(TransactionInput(
+                    name=name,
+                    merchant=merchant,
+                    amount=amount,
+                    date=date,
+                    account=account
+                ))
+        
+        return transactions
+    
+    except Exception as e:
+        logger.error(f"Error parsing CSV: {str(e)}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Error parsing CSV file: {str(e)}"
+        )
+
+# API Endpoints
+
+@app.get("/")
+async def root():
+    """Root endpoint with API information"""
+    return {
+        "message": "Personal Finance AI API",
+        "version": "2.0.0",
+        "features": [
+            "Automated Expense Categorization",
+            "Smart Budget Recommendations", 
+            "Savings Goal Optimization",
+            "Bill Prediction and Reminders",
+            "Personalized Financial Insights",
+            "Spending Pattern Analysis"
+        ],
+        "endpoints": {
+            "categorize_transaction": "/categorize/single?user_id=<user_id>",
+            "categorize_batch": "/categorize/batch?user_id=<user_id>",
+            "upload_csv": "/categorize/upload-csv?user_id=<user_id>",
+            "budget_analysis": "/budget/analyze?user_id=<user_id>",
+            "savings_goals": "/goals/create?user_id=<user_id>",
+            "bill_predictions": "/bills/predictions?user_id=<user_id>",
+            "personalized_insights": "/insights/personalized?user_id=<user_id>",
+            "dashboard": "/dashboard/summary?user_id=<user_id>",
+            "health": "/health"
+        }
+    }
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+# Transaction Categorization Endpoints
+@app.post("/categorize/single", response_model=CategorizedTransaction)
+async def categorize_single_transaction(
+    transaction: TransactionInput,
+    user_id: str = Query(..., description="User ID"),
+    api_version: APIVersion = APIVersion.v2,
+    enable_mapping: bool = False,
+    save_transaction: bool = True
+):
+    """Categorize a single transaction and optionally save it"""
+    
+    # Convert to Fina API format
+    fina_request = FinaAPIRequest(
+        name=transaction.name,
+        merchant=transaction.merchant,
+        amount=transaction.amount
+    )
+    
+    # Call Fina API
+    fina_response = await call_fina_api([fina_request], api_version, enable_mapping)
+    
+    # Process response
+    categorized = process_fina_response([transaction], fina_response)
+    result = categorized[0]
+    
+    # Save transaction if requested
+    if save_transaction:
+        # Load existing transactions
+        existing_transactions = storage.load_transactions(user_id)
+        
+        # Create new stored transaction
+        stored_transaction = StoredTransaction(
+            transaction_id=str(uuid.uuid4()),
+            name=transaction.name,
+            merchant=transaction.merchant,
+            amount=transaction.amount,
+            date=transaction.date,
+            account=transaction.account,
+            category=result.category,
+            subcategory=result.subcategory,
+            confidence=result.confidence,
+            fina_response=result.fina_response,
+            created_at=datetime.now().isoformat(),
+            updated_at=datetime.now().isoformat()
+        )
+        
+        # Add to existing transactions and save
+        existing_transactions.append(stored_transaction)
+        storage.save_transactions(user_id, existing_transactions)
+    
+    return result
+
+@app.post("/categorize/batch")
+async def categorize_batch_transactions(
+    transactions: List[TransactionInput],
+    user_id: str = Query(..., description="User ID"),
+    api_version: APIVersion = APIVersion.v2,
+    enable_mapping: bool = False,
+    save_transactions: bool = True
+):
+    """Categorize multiple transactions in batch"""
+    
+    if not transactions:
+        raise HTTPException(status_code=400, detail="No transactions provided")
+    
+    if len(transactions) > 100:
+        raise HTTPException(status_code=400, detail="Maximum 100 transactions per batch")
+    
+    errors = []
+    categorized_transactions = []
+    
+    try:
+        # Convert to Fina API format
+        fina_requests = [
+            FinaAPIRequest(
+                name=txn.name,
+                merchant=txn.merchant,
+                amount=txn.amount
+            )
+            for txn in transactions
+        ]
+        
+        # Call Fina API
+        fina_response = await call_fina_api(fina_requests, api_version, enable_mapping)
+        
+        # Process response
+        categorized_transactions = process_fina_response(transactions, fina_response)
+        
+        # Save transactions if requested
+        if save_transactions:
+            existing_transactions = storage.load_transactions(user_id)
+            
+            for i, categorized in enumerate(categorized_transactions):
+                stored_transaction = StoredTransaction(
+                    transaction_id=str(uuid.uuid4()),
+                    name=categorized.original_transaction.name,
+                    merchant=categorized.original_transaction.merchant,
+                    amount=categorized.original_transaction.amount,
+                    date=categorized.original_transaction.date,
+                    account=categorized.original_transaction.account,
+                    category=categorized.category,
+                    subcategory=categorized.subcategory,
+                    confidence=categorized.confidence,
+                    fina_response=categorized.fina_response,
+                    created_at=datetime.now().isoformat(),
+                    updated_at=datetime.now().isoformat()
+                )
+                existing_transactions.append(stored_transaction)
+            
+            storage.save_transactions(user_id, existing_transactions)
+        
+    except Exception as e:
+        errors.append(f"Batch processing error: {str(e)}")
+        logger.error(f"Batch categorization error: {str(e)}")
+    
+    return {
+        "success": len(errors) == 0,
+        "categorized_transactions": categorized_transactions,
+        "total_processed": len(transactions),
+        "errors": errors
+    }
+
+@app.post("/categorize/upload-csv")
+async def upload_and_categorize_csv(
+    file: UploadFile = File(...),
+    user_id: str = Query(..., description="User ID"),
+    api_version: APIVersion = APIVersion.v2,
+    enable_mapping: bool = False
+):
+    """Upload CSV file and categorize all transactions"""
+    
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Only CSV files are supported")
+    
+    # Read file content
+    content = await file.read()
+    
+    # Parse transactions from CSV
+    transactions = parse_csv_transactions(content)
+    
+    if not transactions:
+        raise HTTPException(status_code=400, detail="No valid transactions found in CSV")
+    
+    errors = []
+    categorized_transactions = []
+    
+    try:
+        # Process in batches if there are many transactions
+        batch_size = 50
+        all_categorized = []
+        
+        for i in range(0, len(transactions), batch_size):
+            batch = transactions[i:i + batch_size]
+            
+            # Convert to Fina API format
+            fina_requests = [
+                FinaAPIRequest(
+                    name=txn.name,
+                    merchant=txn.merchant,
+                    amount=txn.amount
+                )
+                for txn in batch
+            ]
+            
+            # Call Fina API
+            fina_response = await call_fina_api(fina_requests, api_version, enable_mapping)
+            
+            # Process response
+            batch_categorized = process_fina_response(batch, fina_response)
+            all_categorized.extend(batch_categorized)
+        
+        # Save all transactions
+        existing_transactions = storage.load_transactions(user_id)
+        
+        for categorized in all_categorized:
+            stored_transaction = StoredTransaction(
+                transaction_id=str(uuid.uuid4()),
+                name=categorized.original_transaction.name,
+                merchant=categorized.original_transaction.merchant,
+                amount=categorized.original_transaction.amount,
+                date=categorized.original_transaction.date,
+                account=categorized.original_transaction.account,
+                category=categorized.category,
+                subcategory=categorized.subcategory,
+                confidence=categorized.confidence,
+                fina_response=categorized.fina_response,
+                created_at=datetime.now().isoformat(),
+                updated_at=datetime.now().isoformat()
+            )
+            existing_transactions.append(stored_transaction)
+        
+        storage.save_transactions(user_id, existing_transactions)
+        categorized_transactions = all_categorized
+    
+    except Exception as e:
+        errors.append(f"Processing error: {str(e)}")
+        logger.error(f"CSV processing error: {str(e)}")
+    
+    return {
+        "success": len(errors) == 0,
+        "total_transactions": len(transactions),
+        "categorized_transactions": categorized_transactions,
+        "errors": errors
+    }
+
+# Transaction History Endpoints
+@app.get("/transactions/history")
+async def get_transaction_history(
+    user_id: str = Query(..., description="User ID"),
+    limit: int = Query(default=100, ge=1, le=1000, description="Maximum number of transactions to return"),
+    category: Optional[str] = Query(None, description="Filter by category"),
+    start_date: Optional[str] = Query(None, description="Start date filter (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date filter (YYYY-MM-DD)")
+):
+    """Get user's transaction history with optional filters"""
+    
+    user_transactions = storage.load_transactions(user_id)
+    
+    # Apply filters
+    filtered_transactions = user_transactions
+    
+    if category:
+        filtered_transactions = [t for t in filtered_transactions if t.category.lower() == category.lower()]
+    
+    if start_date:
+        filtered_transactions = [t for t in filtered_transactions 
+                               if t.date and t.date >= start_date]
+    
+    if end_date:
+        filtered_transactions = [t for t in filtered_transactions 
+                               if t.date and t.date <= end_date]
+    
+    # Sort by date (newest first) and limit
+    sorted_transactions = sorted(filtered_transactions, 
+                               key=lambda t: t.created_at, reverse=True)[:limit]
+    
+    return {
+        "total_transactions": len(user_transactions),
+        "filtered_count": len(filtered_transactions),
+        "returned_count": len(sorted_transactions),
+        "transactions": sorted_transactions
+    }
+
+@app.delete("/transactions/{transaction_id}")
+async def delete_transaction(
+    transaction_id: str,
+    user_id: str = Query(..., description="User ID")
+):
+    """Delete a specific transaction"""
+    
+    user_transactions = storage.load_transactions(user_id)
+    
+    # Find and remove transaction
+    updated_transactions = [t for t in user_transactions if t.transaction_id != transaction_id]
+    
+    if len(updated_transactions) == len(user_transactions):
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    
+    # Save updated list
+    storage.save_transactions(user_id, updated_transactions)
+    
+    return {"message": "Transaction deleted successfully"}
+
+# Budget Analysis Endpoints
+@app.post("/budget/analyze", response_model=BudgetRecommendation)
+async def analyze_budget_and_recommend(
+    user_profile: UserFinancialProfile,
+    user_id: str = Query(..., description="User ID"),
+    budget_rule: BudgetRule = BudgetRule.FIFTY_THIRTY_TWENTY,
+    analysis_months: int = Query(default=6, ge=1, le=24, description="Number of months to analyze")
+):
+    """Analyze spending patterns and generate smart budget recommendations"""
+    
+    if user_profile.monthly_income <= 0:
+        raise HTTPException(status_code=400, detail="Valid monthly income is required")
+    
+    try:
+        # Load user transactions
+        user_transactions = storage.load_transactions(user_id)
+        
+        if not user_transactions:
+            raise HTTPException(status_code=404, detail="No transaction data found for analysis")
+        
+        # Analyze spending patterns
+        spending_analysis = budget_analyzer.analyze_spending_patterns(user_transactions, analysis_months)
+        
+        # Generate budget recommendations
+        budget_recommendation = budget_analyzer.generate_budget_recommendation(
+            spending_analysis,
+            user_profile,
+            budget_rule
+        )
+        
+        return budget_recommendation
+    
+    except Exception as e:
+        logger.error(f"Budget analysis error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Budget analysis failed: {str(e)}")
+
+
+@app.post("/budget/quick-analysis")
+async def quick_budget_analysis(
+    monthly_income: float = Query(..., gt=0, description="Monthly income amount"),
+    user_id: str = Query(..., description="User ID"),
+    analysis_months: int = Query(default=3, ge=1, le=24, description="Number of months to analyze")
+):
+    """Quick budget analysis without detailed user profile"""
+    
+    # Load user transactions
+    user_transactions = storage.load_transactions(user_id)
+    
+    if not user_transactions:
+        raise HTTPException(status_code=404, detail="No transaction data found")
+    
+    # Create basic user profile
+    user_profile = UserFinancialProfile(monthly_income=monthly_income)
+    
+    # Analyze spending
+    spending_analysis = budget_analyzer.analyze_spending_patterns(user_transactions, analysis_months)
+    
+    # Generate 50/30/20 rule recommendations
+    budget_recommendation = budget_analyzer.generate_budget_recommendation(
+        spending_analysis,
+        user_profile,
+        BudgetRule.FIFTY_THIRTY_TWENTY
+    )
+    
+    return {
+        "spending_summary": spending_analysis,
+        "budget_recommendation": budget_recommendation,
+        "key_insights": {
+            "monthly_expenses": spending_analysis["total_monthly_expenses"],
+            "savings_rate": (budget_recommendation.savings_potential / monthly_income) * 100,
+            "top_spending_categories": sorted(
+                spending_analysis["category_analysis"].items(),
+                key=lambda x: x[1]["monthly_average"],
+                reverse=True
+            )[:5]
+        }
+    }
+# Savings Goals Endpoints
+@app.post("/goals/create", response_model=SavingsGoal)
+async def create_savings_goal(
+    goal_data: SavingsGoalCreate,
+    user_id: str = Query(..., description="User ID")
+):
+    """Create a new savings goal"""
+    
+    goal = SavingsGoal(
+        goal_id=str(uuid.uuid4()),
+        name=goal_data.name,
+        goal_type=goal_data.goal_type,
+        target_amount=goal_data.target_amount,
+        target_date=goal_data.target_date,
+        monthly_contribution=goal_data.monthly_contribution,
+        priority=goal_data.priority,
+        created_at=datetime.now().isoformat(),
+        updated_at=datetime.now().isoformat()
+    )
+    
+    # Load existing goals and add new one
+    existing_goals = storage.load_goals(user_id)
+    existing_goals.append(goal)
+    storage.save_goals(user_id, existing_goals)
+    
+    return goal
+
+@app.get("/goals/list")
+async def list_savings_goals(user_id: str = Query(..., description="User ID")):
+    """Get all user's savings goals"""
+    goals = storage.load_goals(user_id)
+    return {"goals": goals}
+
+# Option 1: Using a Pydantic model for the request body (RECOMMENDED)
+class GoalProgressUpdate(BaseModel):
+    current_amount: float = Field(..., ge=0, description="Current amount saved towards the goal")
+ 
+@app.put("/goals/{goal_id}/update-progress")
+async def update_goal_progress(
+    goal_id: str,
+    progress_data: GoalProgressUpdate,
+    user_id: str = Query(..., description="User ID")
+):
+    """Update progress on a savings goal"""
+    
+    user_goals = storage.load_goals(user_id)
+    goal = next((g for g in user_goals if g.goal_id == goal_id), None)
+    
+    if not goal:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    
+    # Update goal
+    goal.current_amount = progress_data.current_amount
+    goal.updated_at = datetime.now().isoformat()
+    
+    # Save updated goals
+    storage.save_goals(user_id, user_goals)
+    
+    # Calculate progress
+    progress_percentage = (progress_data.current_amount / goal.target_amount) * 100
+    
+    return {
+        "goal": goal,
+        "progress_percentage": progress_percentage,
+        "remaining_amount": goal.target_amount - progress_data.current_amount,
+        "message": f"Updated {goal.name} progress to ${progress_data.current_amount:,.2f}"
+    }
+ 
+@app.delete("/goals/{goal_id}")
+async def delete_savings_goal(
+    goal_id: str,
+    user_id: str = Query(..., description="User ID")
+):
+    """Delete a savings goal"""
+    
+    user_goals = storage.load_goals(user_id)
+    updated_goals = [g for g in user_goals if g.goal_id != goal_id]
+    
+    if len(updated_goals) == len(user_goals):
+        raise HTTPException(status_code=404, detail="Goal not found")
+    
+    storage.save_goals(user_id, updated_goals)
+    
+    return {"message": "Goal deleted successfully"}
+
+# Financial Insights Endpoints
+@app.get("/insights/personalized")
+async def get_personalized_insights(user_id: str = Query(..., description="User ID")):
+    """Get comprehensive personalized financial insights"""
+    
+    # Load user data
+    user_transactions = storage.load_transactions(user_id)
+    user_goals = storage.load_goals(user_id)
+    
+    if not user_transactions:
+        return {
+            "user_id": user_id,
+            "monthly_summary": {},
+            "spending_insights": [],
+            "savings_opportunities": ["📊 Add transactions to get personalized insights"],
+            "financial_health_score": 50,
+            "recommendations": ["📱 Start by uploading your transaction history"],
+            "generated_at": datetime.now().isoformat()
+        }
+    
+    # Analyze spending patterns
+    spending_analysis = budget_analyzer.analyze_spending_patterns(user_transactions, 6)
+    
+    # Calculate financial health score (simplified)
+    total_expenses = spending_analysis["total_monthly_expenses"]
+    estimated_income = spending_analysis["estimated_monthly_income"]
+    
+    if estimated_income > 0:
+        savings_rate = (estimated_income - total_expenses) / estimated_income
+        health_score = min(100, max(0, 50 + (savings_rate * 100)))
+    else:
+        health_score = 50
+    
+    # Generate insights
+    spending_insights = []
+    for category, analysis in spending_analysis["category_analysis"].items():
+        trend = analysis["trend"]
+        avg_amount = analysis["monthly_average"]
+        
+        if trend == "increasing" and avg_amount > 100:
+            recommendation = f"⬆️ {category} spending is increasing - review recent purchases"
+        elif trend == "decreasing":
+            recommendation = f"⬇️ Great job reducing {category} spending!"
+        else:
+            recommendation = f"✅ {category} spending is stable"
+        
+        spending_insights.append(SpendingInsight(
+            category=category,
+            current_monthly_avg=avg_amount,
+            recommended_budget=avg_amount * 1.1,
+            variance_percentage=0,
+            trend=trend,
+            recommendation=recommendation
+        ))
+    
+    # Generate savings opportunities
+    savings_opportunities = []
+    for category, analysis in spending_analysis["category_analysis"].items():
+        if category.lower() in ["entertainment", "shopping", "dining"] and analysis["monthly_average"] > 200:
+            potential_savings = analysis["monthly_average"] * 0.2
+            savings_opportunities.append(f"💰 Reduce {category} by 20% to save ${potential_savings:.0f}/month")
+    
+    if not savings_opportunities:
+        savings_opportunities = [
+            "🏪 Use price comparison apps for major purchases",
+            "🍳 Cook at home more often to reduce food costs",
+            "⚡ Review subscriptions for unused services"
+        ]
+    
+    # Generate recommendations
+    recommendations = []
+    if estimated_income > 0:
+        savings_rate = (estimated_income - total_expenses) / estimated_income
+        if savings_rate < 0.1:
+            recommendations.append("💡 Aim to save at least 10% of your income")
+        elif savings_rate > 0.3:
+            recommendations.append("🎉 Excellent savings rate! Consider investing")
+    
+    if not user_goals:
+        recommendations.append("🎯 Set financial goals to stay motivated")
+    
+    recommendations.extend([
+        "📊 Track spending trends monthly",
+        "💳 Review credit card statements regularly",
+        "🏦 Automate savings transfers"
+    ])
+    
+    insights = PersonalizedInsights(
+        user_id=user_id,
+        monthly_summary=spending_analysis,
+        spending_insights=spending_insights,
+        savings_opportunities=savings_opportunities[:6],
+        financial_health_score=health_score,
+        recommendations=recommendations[:8],
+        generated_at=datetime.now().isoformat()
+    )
+    
+    # Save insights
+    storage.save_insights(user_id, insights)
+    
+    return insights
+
+@app.get("/insights/financial-health-score")
+async def get_financial_health_score(user_id: str = Query(..., description="User ID")):
+    """Get detailed financial health score breakdown"""
+    
+    user_transactions = storage.load_transactions(user_id)
+    user_goals = storage.load_goals(user_id)
+    
+    if not user_transactions:
+        return {
+            "overall_score": 50,
+            "level": "Needs Data",
+            "message": "📊 Add transaction data to calculate your financial health score",
+            "factors": {},
+            "recommendations": ["Upload your transaction history to get started"]
+        }
+    
+    spending_analysis = budget_analyzer.analyze_spending_patterns(user_transactions, 6)
+    
+    # Calculate score components
+    total_expenses = spending_analysis["total_monthly_expenses"]
+    estimated_income = spending_analysis["estimated_monthly_income"]
+    
+    scores = {
+        "savings_rate": 0,
+        "emergency_fund": 0,
+        "spending_consistency": 0,
+        "goal_progress": 0
+    }
+    
+    # Savings rate score
+    if estimated_income > 0:
+        savings_rate = (estimated_income - total_expenses) / estimated_income
+        scores["savings_rate"] = min(30, savings_rate * 100)
+    
+    # Emergency fund score (based on goals)
+    emergency_goals = [g for g in user_goals if g.goal_type == GoalType.EMERGENCY_FUND]
+    if emergency_goals:
+        progress = emergency_goals[0].current_amount / emergency_goals[0].target_amount
+        scores["emergency_fund"] = min(25, progress * 25)
+    
+    # Spending consistency score
+    category_analysis = spending_analysis["category_analysis"]
+    if category_analysis:
+        stable_categories = sum(1 for cat in category_analysis.values() if cat["trend"] == "stable")
+        consistency_ratio = stable_categories / len(category_analysis)
+        scores["spending_consistency"] = consistency_ratio * 20
+    
+    # Goal progress score
+    if user_goals:
+        avg_progress = sum(g.current_amount / g.target_amount for g in user_goals) / len(user_goals)
+        scores["goal_progress"] = min(25, avg_progress * 25)
+    
+    overall_score = sum(scores.values())
+    
+    # Determine level
+    if overall_score >= 80:
+        level = "Excellent"
+        message = "🎉 Outstanding financial health!"
+    elif overall_score >= 60:
+        level = "Good"
+        message = "👍 Good financial health with room for improvement"
+    elif overall_score >= 40:
+        level = "Fair"
+        message = "⚠️ Fair financial health - focus on key areas"
+    else:
+        level = "Needs Improvement"
+        message = "🚨 Focus on building better financial habits"
+    
+    return {
+        "overall_score": overall_score,
+        "level": level,
+        "message": message,
+        "factors": {
+            "savings_rate": {
+                "score": scores["savings_rate"],
+                "description": "How much you save vs spend"
+            },
+            "emergency_fund": {
+                "score": scores["emergency_fund"],
+                "description": "Emergency fund adequacy"
+            },
+            "spending_consistency": {
+                "score": scores["spending_consistency"],
+                "description": "How predictable your spending is"
+            },
+            "goal_progress": {
+                "score": scores["goal_progress"],
+                "description": "Progress toward financial goals"
+            }
+        },
+        "recommendations": [
+            "💰 Increase savings rate if below 20%",
+            "🛡️ Build emergency fund for 3-6 months expenses",
+            "📊 Create budgets for variable spending categories",
+            "🎯 Set and track specific financial goals"
+        ]
+    }
+
+# Dashboard Summary Endpoint
+@app.get("/dashboard/summary")
+async def get_dashboard_summary(user_id: str = Query(..., description="User ID")):
+    """Get comprehensive dashboard summary for user"""
+    
+    # Load all user data
+    user_transactions = storage.load_transactions(user_id)
+    user_goals = storage.load_goals(user_id)
+    
+    # Recent transactions (last 10)
+    recent_transactions = sorted(user_transactions, key=lambda t: t.created_at, reverse=True)[:10]
+    
+    # Current month spending
+    current_month = datetime.now().strftime("%Y-%m")
+    monthly_spending = sum(abs(t.amount) for t in user_transactions 
+                          if t.amount < 0 and t.date and t.date.startswith(current_month))
+    
+    # Goals progress
+    goals_summary = []
+    for goal in user_goals:
+        progress = (goal.current_amount / goal.target_amount) * 100
+        goals_summary.append({
+            "name": goal.name,
+            "progress_percentage": progress,
+            "current_amount": goal.current_amount,
+            "target_amount": goal.target_amount
+        })
+    
+    # Quick financial health score
+    if user_transactions:
+        spending_analysis = budget_analyzer.analyze_spending_patterns(user_transactions, 3)
+        estimated_income = spending_analysis["estimated_monthly_income"]
+        total_expenses = spending_analysis["total_monthly_expenses"]
+        
+        if estimated_income > 0:
+            savings_rate = (estimated_income - total_expenses) / estimated_income
+            health_score = min(100, max(0, 50 + (savings_rate * 50)))
+        else:
+            health_score = 50
+    else:
+        health_score = 50
+    
+    return {
+        "user_id": user_id,
+        "summary_date": datetime.now().isoformat(),
+        "totals": {
+            "total_transactions": len(user_transactions),
+            "active_goals": len(user_goals),
+            "current_month_spending": monthly_spending
+        },
+        "recent_transactions": recent_transactions,
+        "goals_progress": goals_summary,
+        "financial_health_score": health_score,
+        "quick_insights": [
+            f"💳 ${monthly_spending:.0f} spent this month",
+            f"🎯 {len(user_goals)} active savings goals",
+            f"📊 {len(user_transactions)} total transactions",
+            f"📈 Financial health score: {health_score:.0f}/100"
+        ]
+    }
+
+# Utility Endpoints
+@app.get("/categories/summary")
+async def get_category_summary(user_id: str = Query(..., description="User ID")):
+    """Get summary of spending by category"""
+    
+    user_transactions = storage.load_transactions(user_id)
+    
+    if not user_transactions:
+        return {
+            "total_amount": 0,
+            "total_transactions": 0,
+            "categories": {}
+        }
+    
+    category_summary = {}
+    total_amount = 0
+    
+    for txn in user_transactions:
+        if txn.amount < 0:  # Only expenses
+            category = txn.category
+            amount = abs(txn.amount)
+            
+            if category not in category_summary:
+                category_summary[category] = {
+                    "total_amount": 0,
+                    "transaction_count": 0,
+                    "average_amount": 0
+                }
+            
+            category_summary[category]["total_amount"] += amount
+            category_summary[category]["transaction_count"] += 1
+            total_amount += amount
+    
+    # Calculate averages and percentages
+    for category in category_summary:
+        count = category_summary[category]["transaction_count"]
+        category_summary[category]["average_amount"] = category_summary[category]["total_amount"] / count
+        
+        if total_amount > 0:
+            category_summary[category]["percentage"] = round(
+                (category_summary[category]["total_amount"] / total_amount) * 100, 2
+            )
+        else:
+            category_summary[category]["percentage"] = 0
+    
+    return {
+        "total_amount": total_amount,
+        "total_transactions": len([t for t in user_transactions if t.amount < 0]),
+        "categories": category_summary
+    }
+
+@app.get("/budget/benchmarks")
+async def get_budget_benchmarks():
+    """Get industry benchmark spending percentages by category"""
+    return {
+        "description": "Industry standard spending percentages by category",
+        "benchmarks": budget_analyzer.CATEGORY_BENCHMARKS,
+        "budgeting_rules": {
+            "50_30_20": {
+                "name": "50/30/20 Rule",
+                "description": "50% needs, 30% wants, 20% savings",
+                "allocation": {"needs": 50, "wants": 30, "savings": 20}
+            },
+            "zero_based": {
+                "name": "Zero-Based Budgeting",
+                "description": "Every dollar has a specific purpose",
+                "principle": "Income - Expenses = 0"
+            },
+            "envelope": {
+                "name": "Envelope Method",
+                "description": "Allocate cash to spending categories",
+                "principle": "Physical or digital envelopes for each category"
+            }
+        }
+    }
+
+# Error Handlers
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc):
+    return {
+        "error": True,
+        "message": exc.detail,
+        "status_code": exc.status_code
+    }

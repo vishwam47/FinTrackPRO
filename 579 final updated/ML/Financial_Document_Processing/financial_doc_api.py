@@ -1,0 +1,412 @@
+from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import base64
+import os
+import json
+import re
+from typing import Dict, Any, List, Optional
+from google import genai
+from google.genai import types
+import asyncio
+from datetime import datetime
+import spacy
+from decimal import Decimal
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Load spaCy model for NLP processing
+try:
+    nlp = spacy.load("en_core_web_sm")
+except OSError:
+    print("Please install spaCy English model: python -m spacy download en_core_web_sm")
+    nlp = None
+
+app = FastAPI(
+    title="Financial Document Processing API",
+    description="Extract and process financial data from PDFs and images using Google Gemini",
+    version="1.0.0"
+)
+
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Pydantic models for responses
+class ExtractedText(BaseModel):
+    raw_text: str
+    confidence_score: Optional[float] = None
+
+class InvoiceData(BaseModel):
+    invoice_number: Optional[str] = None
+    invoice_date: Optional[str] = None
+    due_date: Optional[str] = None
+    vendor_name: Optional[str] = None
+    vendor_address: Optional[str] = None
+    customer_name: Optional[str] = None
+    customer_address: Optional[str] = None
+    subtotal: Optional[float] = None
+    tax_amount: Optional[float] = None
+    total_amount: Optional[float] = None
+    currency: Optional[str] = None
+    line_items: List[Dict[str, Any]] = []
+
+class BankStatementData(BaseModel):
+    bank_name: Optional[str] = None
+    account_number: Optional[str] = None
+    statement_period: Optional[str] = None
+    opening_balance: Optional[float] = None
+    closing_balance: Optional[float] = None
+    transactions: List[Dict[str, Any]] = []
+
+class FinancialDocumentResponse(BaseModel):
+    document_type: str
+    extracted_text: str
+    structured_data: Dict[str, Any]
+    entities: List[Dict[str, Any]] = []
+    processing_time: float
+
+class GeminiExtractor:
+    def __init__(self):
+        self.client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+        self.model = "gemini-2.0-flash"
+
+    async def extract_from_pdf(self, pdf_data: bytes, prompt: str = None) -> str:
+        """Extract text from PDF using Google Gemini"""
+        if not prompt:
+            prompt = """Extract all text from this PDF document. Focus on financial information such as:
+            - Invoice numbers, dates, amounts
+            - Company names and addresses  
+            - Line items and totals
+            - Account numbers and transaction details
+            
+            Return the extracted text in a structured format that preserves the document layout."""
+        
+        try:
+            base64_pdf = base64.b64encode(pdf_data).decode('utf-8')
+            
+            contents = [
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part.from_bytes(
+                            mime_type="application/pdf",
+                            data=base64.b64decode(base64_pdf),
+                        ),
+                        types.Part.from_text(text=prompt),
+                    ],
+                ),
+            ]
+            
+            generate_content_config = types.GenerateContentConfig(
+                response_mime_type="text/plain",
+            )
+
+            result = ""
+            for chunk in self.client.models.generate_content_stream(
+                model=self.model,
+                contents=contents,
+                config=generate_content_config,
+            ):
+                result += chunk.text
+            
+            return result.strip()
+        
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error extracting from PDF: {str(e)}")
+
+    async def extract_from_image(self, image_data: bytes, mime_type: str, prompt: str = None) -> str:
+        """Extract text from image using Google Gemini"""
+        if not prompt:
+            prompt = """Extract all text from this image. Focus on financial information such as:
+            - Invoice numbers, dates, amounts
+            - Company names and addresses
+            - Line items and totals
+            - Account numbers and transaction details
+            
+            Output the data in a structured JSON format with clear field names."""
+        
+        try:
+            base64_image = base64.b64encode(image_data).decode('utf-8')
+            
+            contents = [
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part.from_bytes(
+                            mime_type=mime_type,
+                            data=base64.b64decode(base64_image),
+                        ),
+                        types.Part.from_text(text=prompt),
+                    ],
+                ),
+            ]
+            
+            generate_content_config = types.GenerateContentConfig(
+                response_mime_type="text/plain",
+            )
+
+            result = ""
+            for chunk in self.client.models.generate_content_stream(
+                model=self.model,
+                contents=contents,
+                config=generate_content_config,
+            ):
+                result += chunk.text
+            
+            return result.strip()
+        
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error extracting from image: {str(e)}")
+
+class DocumentProcessor:
+    def __init__(self):
+        self.gemini_extractor = GeminiExtractor()
+        
+    def detect_document_type(self, text: str) -> str:
+        """Detect the type of financial document based on extracted text"""
+        text_lower = text.lower()
+        
+        if any(keyword in text_lower for keyword in ['invoice', 'bill to', 'invoice number', 'invoice date']):
+            return "invoice"
+        elif any(keyword in text_lower for keyword in ['bank statement', 'account statement', 'beginning balance', 'ending balance']):
+            return "bank_statement"
+        elif any(keyword in text_lower for keyword in ['receipt', 'purchase', 'total paid']):
+            return "receipt"
+        elif any(keyword in text_lower for keyword in ['balance sheet', 'assets', 'liabilities', 'equity']):
+            return "balance_sheet"
+        elif any(keyword in text_lower for keyword in ['income statement', 'profit and loss', 'revenue', 'expenses']):
+            return "income_statement"
+        else:
+            return "unknown"
+    
+    def extract_entities(self, text: str) -> List[Dict[str, Any]]:
+        """Extract named entities using spaCy"""
+        if not nlp:
+            return []
+        
+        doc = nlp(text)
+        entities = []
+        
+        for ent in doc.ents:
+            entities.append({
+                "text": ent.text,
+                "label": ent.label_,
+                "description": spacy.explain(ent.label_),
+                "start": ent.start_char,
+                "end": ent.end_char
+            })
+        
+        return entities
+    
+    def parse_invoice_data(self, text: str) -> InvoiceData:
+        """Parse invoice-specific data from extracted text"""
+        invoice_data = InvoiceData()
+        
+        # Extract invoice number
+        invoice_num_pattern = r'invoice\s*(?:number|#)?\s*:?\s*([A-Z0-9\-]+)'
+        match = re.search(invoice_num_pattern, text, re.IGNORECASE)
+        if match:
+            invoice_data.invoice_number = match.group(1)
+        
+        # Extract dates
+        date_pattern = r'(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})'
+        dates = re.findall(date_pattern, text)
+        if dates:
+            invoice_data.invoice_date = dates[0]
+            if len(dates) > 1:
+                invoice_data.due_date = dates[1]
+        
+        # Extract amounts
+        amount_pattern = r'\$?\s*(\d{1,3}(?:,\d{3})*\.?\d{0,2})'
+        amounts = re.findall(amount_pattern, text)
+        if amounts:
+            # Try to identify total amount (usually the largest)
+            numeric_amounts = [float(amt.replace(',', '')) for amt in amounts]
+            invoice_data.total_amount = max(numeric_amounts)
+        
+        # Extract company names (first organization entity found)
+        if nlp:
+            doc = nlp(text)
+            orgs = [ent.text for ent in doc.ents if ent.label_ == "ORG"]
+            if orgs:
+                invoice_data.vendor_name = orgs[0]
+                if len(orgs) > 1:
+                    invoice_data.customer_name = orgs[1]
+        
+        return invoice_data
+    
+    def parse_bank_statement_data(self, text: str) -> BankStatementData:
+        """Parse bank statement data from extracted text"""
+        statement_data = BankStatementData()
+        
+        # Extract bank name
+        if nlp:
+            doc = nlp(text)
+            orgs = [ent.text for ent in doc.ents if ent.label_ == "ORG"]
+            if orgs:
+                statement_data.bank_name = orgs[0]
+        
+        # Extract account number
+        account_pattern = r'account\s*(?:number|#)?\s*:?\s*([0-9\-\*]+)'
+        match = re.search(account_pattern, text, re.IGNORECASE)
+        if match:
+            statement_data.account_number = match.group(1)
+        
+        # Extract balances
+        balance_pattern = r'(?:beginning|opening|starting)\s*balance\s*:?\s*\$?\s*(\d{1,3}(?:,\d{3})*\.?\d{0,2})'
+        match = re.search(balance_pattern, text, re.IGNORECASE)
+        if match:
+            statement_data.opening_balance = float(match.group(1).replace(',', ''))
+        
+        ending_balance_pattern = r'(?:ending|closing|final)\s*balance\s*:?\s*\$?\s*(\d{1,3}(?:,\d{3})*\.?\d{0,2})'
+        match = re.search(ending_balance_pattern, text, re.IGNORECASE)
+        if match:
+            statement_data.closing_balance = float(match.group(1).replace(',', ''))
+        
+        return statement_data
+
+# Initialize processor
+processor = DocumentProcessor()
+
+@app.get("/")
+async def root():
+    return {"message": "Financial Document Processing API", "status": "active"}
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+@app.post("/extract/text", response_model=ExtractedText)
+async def extract_text_only(file: UploadFile = File(...)):
+    """Extract raw text from PDF or image file"""
+    if not file.content_type:
+        raise HTTPException(status_code=400, detail="Could not determine file type")
+    
+    content = await file.read()
+    
+    try:
+        if file.content_type == "application/pdf":
+            text = await processor.gemini_extractor.extract_from_pdf(content)
+        elif file.content_type.startswith("image/"):
+            text = await processor.gemini_extractor.extract_from_image(content, file.content_type)
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file type")
+        
+        return ExtractedText(raw_text=text)
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
+
+@app.post("/process/document", response_model=FinancialDocumentResponse)
+async def process_financial_document(file: UploadFile = File(...)):
+    """Process financial document and extract structured data"""
+    start_time = datetime.now()
+    
+    if not file.content_type:
+        raise HTTPException(status_code=400, detail="Could not determine file type")
+    
+    content = await file.read()
+    
+    try:
+        # Extract text using Gemini
+        if file.content_type == "application/pdf":
+            extracted_text = await processor.gemini_extractor.extract_from_pdf(content)
+        elif file.content_type.startswith("image/"):
+            extracted_text = await processor.gemini_extractor.extract_from_image(content, file.content_type)
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file type")
+        
+        # Detect document type
+        doc_type = processor.detect_document_type(extracted_text)
+        
+        # Extract entities
+        entities = processor.extract_entities(extracted_text)
+        
+        # Parse structured data based on document type
+        structured_data = {}
+        if doc_type == "invoice":
+            invoice_data = processor.parse_invoice_data(extracted_text)
+            structured_data = invoice_data.dict()
+        elif doc_type == "bank_statement":
+            statement_data = processor.parse_bank_statement_data(extracted_text)
+            structured_data = statement_data.dict()
+        
+        processing_time = (datetime.now() - start_time).total_seconds()
+        
+        return FinancialDocumentResponse(
+            document_type=doc_type,
+            extracted_text=extracted_text,
+            structured_data=structured_data,
+            entities=entities,
+            processing_time=processing_time
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
+
+@app.post("/process/invoice", response_model=InvoiceData)
+async def process_invoice(file: UploadFile = File(...)):
+    """Specialized invoice processing endpoint"""
+    content = await file.read()
+    
+    # Custom prompt for invoice processing
+    invoice_prompt = """Extract invoice information from this document and structure it as follows:
+    - Invoice number
+    - Invoice date and due date
+    - Vendor/supplier information (name, address)
+    - Customer/client information (name, address)  
+    - Line items with descriptions, quantities, unit prices
+    - Subtotal, tax amount, and total amount
+    - Currency used
+    
+    Focus on accuracy and extract all financial details."""
+    
+    try:
+        if file.content_type == "application/pdf":
+            text = await processor.gemini_extractor.extract_from_pdf(content, invoice_prompt)
+        elif file.content_type.startswith("image/"):
+            text = await processor.gemini_extractor.extract_from_image(content, file.content_type, invoice_prompt)
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file type")
+        
+        return processor.parse_invoice_data(text)
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing invoice: {str(e)}")
+
+@app.post("/process/bank-statement", response_model=BankStatementData)
+async def process_bank_statement(file: UploadFile = File(...)):
+    """Specialized bank statement processing endpoint"""
+    content = await file.read()
+    
+    # Custom prompt for bank statement processing
+    statement_prompt = """Extract bank statement information from this document:
+    - Bank name and branch information
+    - Account number and account holder name
+    - Statement period (from and to dates)
+    - Opening and closing balances
+    - All transactions with dates, descriptions, and amounts
+    - Any fees or charges
+    
+    Organize the data clearly and ensure all financial amounts are accurate."""
+    
+    try:
+        if file.content_type == "application/pdf":
+            text = await processor.gemini_extractor.extract_from_pdf(content, statement_prompt)
+        elif file.content_type.startswith("image/"):
+            text = await processor.gemini_extractor.extract_from_image(content, file.content_type, statement_prompt)
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file type")
+        
+        return processor.parse_bank_statement_data(text)
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing bank statement: {str(e)}")

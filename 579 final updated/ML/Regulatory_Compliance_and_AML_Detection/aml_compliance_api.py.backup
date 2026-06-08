@@ -1,0 +1,600 @@
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from pydantic import BaseModel, validator
+from typing import List, Dict, Any, Optional, Tuple
+import pandas as pd
+import numpy as np
+import networkx as nx
+from datetime import datetime, timedelta
+import requests
+import json
+import asyncio
+from sklearn.cluster import DBSCAN
+from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
+import nltk
+from textblob import TextBlob
+import re
+import warnings
+warnings.filterwarnings('ignore')
+
+# Download NLTK data if not present
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt')
+
+app = FastAPI(
+    title="Regulatory Compliance & AML Detection API",
+    description="Anti-Money Laundering detection using graph analysis and anomaly detection",
+    version="1.0.0"
+)
+
+# Pydantic Models
+class Transaction(BaseModel):
+    transaction_id: str
+    from_account: str
+    to_account: str
+    amount: float
+    currency: str = "USD"
+    timestamp: datetime
+    transaction_type: str
+    description: Optional[str] = None
+    country_from: Optional[str] = None
+    country_to: Optional[str] = None
+
+class Customer(BaseModel):
+    customer_id: str
+    name: str
+    date_of_birth: Optional[str] = None
+    nationality: Optional[str] = None
+    address: Optional[str] = None
+    risk_score: Optional[float] = 0.0
+    is_pep: bool = False
+    kyc_status: str = "pending"
+
+class SanctionsScreeningRequest(BaseModel):
+    name: str
+    date_of_birth: Optional[str] = None
+    nationality: Optional[str] = None
+    aliases: List[str] = []
+
+class AMLAlert(BaseModel):
+    alert_id: str
+    customer_id: str
+    transaction_ids: List[str]
+    alert_type: str
+    risk_score: float
+    description: str
+    status: str = "pending"
+    created_at: datetime
+
+class ComplianceResponse(BaseModel):
+    compliance_status: str
+    risk_score: float
+    alerts: List[Dict[str, Any]]
+    recommendations: List[str]
+
+# AML Detection Engine
+class AMLEngine:
+    def __init__(self):
+        self.transactions = {}
+        self.customers = {}
+        self.alerts = {}
+        self.sanctions_cache = {}
+        self.transaction_graph = nx.DiGraph()
+        self.scaler = StandardScaler()
+        
+        # Risk thresholds
+        self.HIGH_AMOUNT_THRESHOLD = 10000
+        self.VELOCITY_THRESHOLD = 5  # transactions per hour
+        self.ROUND_AMOUNT_THRESHOLD = 0.95  # percentage of round amounts
+        
+        # Load free sanctions data (simulated - in production use real APIs)
+        self.load_sanctions_data()
+    
+    def load_sanctions_data(self):
+        """Load sanctions and PEP data from free sources"""
+        # Simulated OFAC SDN list entries (in production, fetch from actual APIs)
+        self.sanctions_list = [
+            {"name": "John Doe", "type": "individual", "programs": ["OFAC_SDN"]},
+            {"name": "Evil Corp", "type": "entity", "programs": ["OFAC_SDN"]},
+            {"name": "Bad Bank Ltd", "type": "entity", "programs": ["EU_SANCTIONS"]},
+        ]
+        
+        # Simulated PEP list (in production, use OpenSanctions API)
+        self.pep_list = [
+            {"name": "Political Figure One", "position": "Minister", "country": "Examplestan"},
+            {"name": "Government Official Two", "position": "Deputy Director", "country": "Sampleland"},
+        ]
+    
+    def screen_sanctions(self, name: str, fuzzy_threshold: float = 0.8) -> Dict[str, Any]:
+        """Screen against sanctions lists using fuzzy matching"""
+        matches = []
+        name_clean = self.clean_name(name)
+        
+        for entry in self.sanctions_list + self.pep_list:
+            entry_name_clean = self.clean_name(entry["name"])
+            similarity = self.calculate_similarity(name_clean, entry_name_clean)
+            
+            if similarity >= fuzzy_threshold:
+                matches.append({
+                    "matched_name": entry["name"],
+                    "similarity_score": similarity,
+                    "list_type": "PEP" if entry in self.pep_list else "SANCTIONS",
+                    "details": entry
+                })
+        
+        return {
+            "matches_found": len(matches) > 0,
+            "match_count": len(matches),
+            "matches": matches,
+            "screening_date": datetime.now().isoformat()
+        }
+    
+    def clean_name(self, name: str) -> str:
+        """Clean name for better matching"""
+        # Remove common titles and clean text
+        name = re.sub(r'\b(mr|mrs|ms|dr|prof|sir|lord|lady)\b\.?', '', name.lower())
+        name = re.sub(r'[^\w\s]', '', name)
+        return ' '.join(name.split())
+    
+    def calculate_similarity(self, name1: str, name2: str) -> float:
+        """Calculate similarity between two names using Jaccard similarity"""
+        set1 = set(name1.split())
+        set2 = set(name2.split())
+        intersection = set1.intersection(set2)
+        union = set1.union(set2)
+        return len(intersection) / len(union) if union else 0.0
+    
+    def add_transaction(self, transaction: Transaction):
+        """Add transaction to the system"""
+        self.transactions[transaction.transaction_id] = transaction.dict()
+        
+        # Update transaction graph
+        self.transaction_graph.add_edge(
+            transaction.from_account,
+            transaction.to_account,
+            weight=transaction.amount,
+            timestamp=transaction.timestamp.isoformat(),
+            transaction_id=transaction.transaction_id
+        )
+    
+    def detect_structuring(self, customer_id: str, time_window_hours: int = 24) -> Dict[str, Any]:
+        """Detect structuring (breaking large amounts into smaller transactions)"""
+        customer_transactions = [
+            t for t in self.transactions.values() 
+            if t["from_account"] == customer_id or t["to_account"] == customer_id
+        ]
+        
+        if not customer_transactions:
+            return {"structuring_detected": False, "risk_score": 0.0}
+        
+        # Check for multiple transactions just below reporting threshold
+        recent_transactions = [
+            t for t in customer_transactions
+            if datetime.fromisoformat(t["timestamp"].replace('Z', '+00:00')) > 
+               datetime.now() - timedelta(hours=time_window_hours)
+        ]
+        
+        amounts = [t["amount"] for t in recent_transactions]
+        
+        # Indicators of structuring
+        below_threshold_count = sum(1 for amt in amounts if 9000 <= amt <= 9999)
+        round_amounts = sum(1 for amt in amounts if amt % 1000 == 0)
+        total_amount = sum(amounts)
+        
+        risk_score = 0.0
+        indicators = []
+        
+        if below_threshold_count >= 3:
+            risk_score += 0.4
+            indicators.append(f"{below_threshold_count} transactions just below $10k threshold")
+        
+        if len(amounts) > 0 and round_amounts / len(amounts) > 0.7:
+            risk_score += 0.3
+            indicators.append("High percentage of round amounts")
+        
+        if total_amount > 50000 and len(recent_transactions) > 10:
+            risk_score += 0.3
+            indicators.append("High volume with many small transactions")
+        
+        return {
+            "structuring_detected": risk_score > 0.5,
+            "risk_score": min(risk_score, 1.0),
+            "transaction_count": len(recent_transactions),
+            "total_amount": total_amount,
+            "indicators": indicators
+        }
+    
+    def analyze_transaction_network(self, customer_id: str) -> Dict[str, Any]:
+        """Analyze transaction patterns using network analysis"""
+        if customer_id not in self.transaction_graph:
+            return {"risk_score": 0.0, "analysis": "No network data available"}
+        
+        # Calculate network metrics
+        try:
+            degree_centrality = nx.degree_centrality(self.transaction_graph)[customer_id]
+            in_degree = self.transaction_graph.in_degree(customer_id)
+            out_degree = self.transaction_graph.out_degree(customer_id)
+            
+            # Find connected components
+            if self.transaction_graph.is_directed():
+                components = list(nx.weakly_connected_components(self.transaction_graph))
+            else:
+                components = list(nx.connected_components(self.transaction_graph))
+            
+            customer_component_size = 0
+            for component in components:
+                if customer_id in component:
+                    customer_component_size = len(component)
+                    break
+            
+            # Calculate risk based on network metrics
+            risk_score = 0.0
+            indicators = []
+            
+            if degree_centrality > 0.1:  # High centrality indicates hub behavior
+                risk_score += 0.3
+                indicators.append("High network centrality (potential hub)")
+            
+            if customer_component_size > 10:  # Large connected component
+                risk_score += 0.2
+                indicators.append("Large transaction network")
+            
+            if in_degree > 20 or out_degree > 20:  # High transaction volume
+                risk_score += 0.2
+                indicators.append("High transaction volume")
+            
+            return {
+                "risk_score": min(risk_score, 1.0),
+                "degree_centrality": degree_centrality,
+                "in_degree": in_degree,
+                "out_degree": out_degree,
+                "component_size": customer_component_size,
+                "indicators": indicators
+            }
+        
+        except Exception as e:
+            return {"risk_score": 0.0, "error": str(e)}
+    
+    def detect_anomalies(self, customer_id: str) -> Dict[str, Any]:
+        """Detect anomalous transactions using ML"""
+        customer_transactions = [
+            t for t in self.transactions.values()
+            if t["from_account"] == customer_id or t["to_account"] == customer_id
+        ]
+        
+        if len(customer_transactions) < 5:
+            return {"anomalies_detected": False, "risk_score": 0.0}
+        
+        # Prepare features for anomaly detection
+        features = []
+        for t in customer_transactions:
+            hour = datetime.fromisoformat(t["timestamp"].replace('Z', '+00:00')).hour
+            features.append([
+                t["amount"],
+                hour,
+                1 if t["from_account"] == customer_id else 0,  # outgoing vs incoming
+                len(t.get("description", "")),  # description length
+            ])
+        
+        # Use Isolation Forest for anomaly detection
+        if len(features) >= 5:
+            iso_forest = IsolationForest(contamination=0.1, random_state=42)
+            anomaly_scores = iso_forest.fit_predict(features)
+            anomaly_count = sum(1 for score in anomaly_scores if score == -1)
+            
+            risk_score = anomaly_count / len(features)
+            
+            return {
+                "anomalies_detected": anomaly_count > 0,
+                "anomaly_count": anomaly_count,
+                "total_transactions": len(features),
+                "risk_score": risk_score
+            }
+        
+        return {"anomalies_detected": False, "risk_score": 0.0}
+    
+    def generate_aml_report(self, customer_id: str) -> Dict[str, Any]:
+        """Generate comprehensive AML report for a customer"""
+        if customer_id not in self.customers:
+            raise HTTPException(status_code=404, detail="Customer not found")
+        
+        customer = self.customers[customer_id]
+        
+        # Run all AML checks
+        sanctions_result = self.screen_sanctions(customer["name"])
+        structuring_result = self.detect_structuring(customer_id)
+        network_result = self.analyze_transaction_network(customer_id)
+        anomaly_result = self.detect_anomalies(customer_id)
+        
+        # Calculate overall risk score
+        risk_scores = [
+            sanctions_result.get("match_count", 0) * 0.3,  # Sanctions matches
+            structuring_result.get("risk_score", 0) * 0.3,
+            network_result.get("risk_score", 0) * 0.2,
+            anomaly_result.get("risk_score", 0) * 0.2
+        ]
+        
+        overall_risk_score = min(sum(risk_scores), 1.0)
+        
+        # Determine compliance status
+        if overall_risk_score > 0.7:
+            compliance_status = "HIGH_RISK"
+        elif overall_risk_score > 0.4:
+            compliance_status = "MEDIUM_RISK"
+        else:
+            compliance_status = "LOW_RISK"
+        
+        # Generate recommendations
+        recommendations = []
+        if sanctions_result["matches_found"]:
+            recommendations.append("Immediate sanctions screening required")
+        if structuring_result.get("structuring_detected", False):
+            recommendations.append("Investigate potential structuring activity")
+        if network_result.get("risk_score", 0) > 0.5:
+            recommendations.append("Enhanced transaction monitoring")
+        if anomaly_result.get("anomalies_detected", False):
+            recommendations.append("Review anomalous transactions")
+        
+        return {
+            "customer_id": customer_id,
+            "compliance_status": compliance_status,
+            "overall_risk_score": overall_risk_score,
+            "sanctions_screening": sanctions_result,
+            "structuring_analysis": structuring_result,
+            "network_analysis": network_result,
+            "anomaly_detection": anomaly_result,
+            "recommendations": recommendations,
+            "report_generated_at": datetime.now().isoformat()
+        }
+
+# Initialize AML Engine
+aml_engine = AMLEngine()
+
+# API Endpoints
+@app.get("/")
+async def root():
+    return {
+        "message": "Regulatory Compliance & AML Detection API",
+        "version": "1.0.0",
+        "features": ["sanctions_screening", "transaction_monitoring", "network_analysis", "anomaly_detection"]
+    }
+
+@app.post("/customers/", response_model=Dict[str, Any])
+async def add_customer(customer: Customer):
+    """Add a new customer to the system"""
+    aml_engine.customers[customer.customer_id] = customer.dict()
+    
+    # Immediate sanctions screening
+    sanctions_result = aml_engine.screen_sanctions(customer.name)
+    
+    return {
+        "customer_id": customer.customer_id,
+        "status": "added",
+        "sanctions_screening": sanctions_result
+    }
+
+@app.post("/transactions/", response_model=Dict[str, Any])
+async def add_transaction(transaction: Transaction):
+    """Add a transaction and perform real-time monitoring"""
+    aml_engine.add_transaction(transaction)
+    
+    # Real-time AML checks
+    alerts = []
+    
+    # High amount alert
+    if transaction.amount > aml_engine.HIGH_AMOUNT_THRESHOLD:
+        alerts.append({
+            "type": "HIGH_AMOUNT",
+            "description": f"Transaction amount ${transaction.amount:,.2f} exceeds threshold",
+            "risk_score": 0.6
+        })
+    
+    # Velocity check
+    recent_transactions = [
+        t for t in aml_engine.transactions.values()
+        if t["from_account"] == transaction.from_account and
+           datetime.fromisoformat(t["timestamp"].replace('Z', '+00:00')) > 
+           datetime.now() - timedelta(hours=1)
+    ]
+    
+    if len(recent_transactions) > aml_engine.VELOCITY_THRESHOLD:
+        alerts.append({
+            "type": "HIGH_VELOCITY",
+            "description": f"{len(recent_transactions)} transactions in 1 hour",
+            "risk_score": 0.5
+        })
+    
+    return {
+        "transaction_id": transaction.transaction_id,
+        "status": "processed",
+        "alerts": alerts,
+        "immediate_action_required": any(alert["risk_score"] > 0.7 for alert in alerts)
+    }
+
+@app.post("/screen/sanctions", response_model=Dict[str, Any])
+async def screen_sanctions(request: SanctionsScreeningRequest):
+    """Screen name against sanctions and PEP lists"""
+    result = aml_engine.screen_sanctions(request.name)
+    
+    # Also check aliases
+    if request.aliases:
+        for alias in request.aliases:
+            alias_result = aml_engine.screen_sanctions(alias)
+            if alias_result["matches_found"]:
+                result["matches"].extend(alias_result["matches"])
+                result["matches_found"] = True
+                result["match_count"] += alias_result["match_count"]
+    
+    return result
+
+@app.get("/customers/{customer_id}/risk-assessment", response_model=Dict[str, Any])
+async def get_risk_assessment(customer_id: str):
+    """Get comprehensive risk assessment for a customer"""
+    return aml_engine.generate_aml_report(customer_id)
+
+@app.get("/customers/{customer_id}/transactions/structuring", response_model=Dict[str, Any])
+async def check_structuring(customer_id: str, time_window_hours: int = 24):
+    """Check for structuring patterns in customer transactions"""
+    return aml_engine.detect_structuring(customer_id, time_window_hours)
+
+@app.get("/customers/{customer_id}/network-analysis", response_model=Dict[str, Any])
+async def analyze_network(customer_id: str):
+    """Analyze customer's transaction network"""
+    return aml_engine.analyze_transaction_network(customer_id)
+
+@app.get("/customers/{customer_id}/anomalies", response_model=Dict[str, Any])
+async def detect_anomalies(customer_id: str):
+    """Detect anomalous transactions for a customer"""
+    return aml_engine.detect_anomalies(customer_id)
+
+@app.get("/network/suspicious-clusters", response_model=Dict[str, Any])
+async def find_suspicious_clusters():
+    """Find suspicious clusters in the transaction network"""
+    if len(aml_engine.transaction_graph.nodes()) < 3:
+        return {"clusters": [], "message": "Insufficient data for clustering"}
+    
+    # Use community detection to find clusters
+    try:
+        # Convert to undirected for community detection
+        undirected_graph = aml_engine.transaction_graph.to_undirected()
+        
+        # Simple clustering based on connected components
+        components = list(nx.connected_components(undirected_graph))
+        
+        suspicious_clusters = []
+        for i, component in enumerate(components):
+            if len(component) > 5:  # Only consider larger components
+                subgraph = undirected_graph.subgraph(component)
+                
+                # Calculate cluster metrics
+                density = nx.density(subgraph)
+                avg_clustering = nx.average_clustering(subgraph)
+                
+                # Calculate total transaction volume
+                total_volume = sum(
+                    data.get('weight', 0) 
+                    for _, _, data in subgraph.edges(data=True)
+                )
+                
+                risk_score = 0.0
+                if density > 0.5:  # High density suggests possible collusion
+                    risk_score += 0.4
+                if avg_clustering > 0.7:  # High clustering
+                    risk_score += 0.3
+                if total_volume > 100000:  # High volume
+                    risk_score += 0.3
+                
+                if risk_score > 0.5:
+                    suspicious_clusters.append({
+                        "cluster_id": f"cluster_{i}",
+                        "nodes": list(component),
+                        "node_count": len(component),
+                        "edge_count": subgraph.number_of_edges(),
+                        "density": density,
+                        "total_volume": total_volume,
+                        "risk_score": min(risk_score, 1.0)
+                    })
+        
+        return {
+            "suspicious_clusters": suspicious_clusters,
+            "total_clusters_found": len(suspicious_clusters),
+            "analysis_timestamp": datetime.now().isoformat()
+        }
+    
+    except Exception as e:
+        return {"error": str(e), "clusters": []}
+
+@app.get("/compliance/dashboard", response_model=Dict[str, Any])
+async def compliance_dashboard():
+    """Get overall compliance dashboard metrics"""
+    total_customers = len(aml_engine.customers)
+    total_transactions = len(aml_engine.transactions)
+    
+    # Count high-risk customers
+    high_risk_customers = 0
+    for customer_id in aml_engine.customers.keys():
+        try:
+            report = aml_engine.generate_aml_report(customer_id)
+            if report["compliance_status"] == "HIGH_RISK":
+                high_risk_customers += 1
+        except:
+            continue
+    
+    # Recent transaction volume
+    recent_volume = sum(
+        t["amount"] for t in aml_engine.transactions.values()
+        if datetime.fromisoformat(t["timestamp"].replace('Z', '+00:00')) > 
+           datetime.now() - timedelta(days=1)
+    )
+    
+    return {
+        "total_customers": total_customers,
+        "total_transactions": total_transactions,
+        "high_risk_customers": high_risk_customers,
+        "recent_24h_volume": recent_volume,
+        "network_nodes": aml_engine.transaction_graph.number_of_nodes(),
+        "network_edges": aml_engine.transaction_graph.number_of_edges(),
+        "sanctions_list_size": len(aml_engine.sanctions_list),
+        "pep_list_size": len(aml_engine.pep_list),
+        "last_updated": datetime.now().isoformat()
+    }
+
+@app.post("/simulate/suspicious-activity", response_model=Dict[str, Any])
+async def simulate_suspicious_activity():
+    """Simulate suspicious activity for testing (Demo purposes only)"""
+    # Create test customers
+    test_customers = [
+        Customer(customer_id="test_001", name="John Suspicious", kyc_status="completed"),
+        Customer(customer_id="test_002", name="Maria Layering", kyc_status="completed"),
+        Customer(customer_id="test_003", name="Bob Structure", kyc_status="completed"),
+    ]
+    
+    for customer in test_customers:
+        aml_engine.customers[customer.customer_id] = customer.dict()
+    
+    # Create suspicious transactions
+    base_time = datetime.now()
+    suspicious_transactions = []
+    
+    # Structuring pattern
+    for i in range(5):
+        transaction = Transaction(
+            transaction_id=f"struct_{i}",
+            from_account="test_003",
+            to_account="external_001",
+            amount=9500.0,  # Just under $10k threshold
+            timestamp=base_time + timedelta(minutes=i*30),
+            transaction_type="wire_transfer"
+        )
+        aml_engine.add_transaction(transaction)
+        suspicious_transactions.append(transaction.transaction_id)
+    
+    # Layering pattern
+    accounts = ["test_001", "test_002", "intermediate_001", "intermediate_002"]
+    for i in range(10):
+        from_acc = accounts[i % len(accounts)]
+        to_acc = accounts[(i + 1) % len(accounts)]
+        
+        transaction = Transaction(
+            transaction_id=f"layer_{i}",
+            from_account=from_acc,
+            to_account=to_acc,
+            amount=15000.0,
+            timestamp=base_time + timedelta(hours=i),
+            transaction_type="internal_transfer"
+        )
+        aml_engine.add_transaction(transaction)
+        suspicious_transactions.append(transaction.transaction_id)
+    
+    return {
+        "simulation_completed": True,
+        "test_customers_created": len(test_customers),
+        "suspicious_transactions_created": len(suspicious_transactions),
+        "message": "Use the risk assessment endpoints to analyze the simulated suspicious activity"
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8002)
