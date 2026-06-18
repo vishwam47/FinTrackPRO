@@ -36,10 +36,10 @@ app.use("/api/loan", loanRoutes);
 app.use("/api/notification", notificationRoutes);
 
 const transporter = nodemailer.createTransport({
-  service: "gmail",
+  service: process.env.EMAIL_SERVICE || "gmail",
   auth: {
-    user: "citycommuteoperator@gmail.com",
-    pass: "tqst jecc gyef fnwn",
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
   },
 });
 
