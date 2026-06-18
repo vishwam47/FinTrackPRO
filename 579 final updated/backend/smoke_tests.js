@@ -127,7 +127,7 @@ async function run() {
   });
 
   // ── 3. Auth middleware enforcement ─────────────────────────────────────────
-  console.log('\n── 3. Auth Middleware (Phase 3a) ────────────────────\n');
+  console.log('\n── 3. Auth Middleware + userId from JWT (Phase 3a/3b) ─\n');
 
   await test('POST /api/user/getuser  →  401 without Authorization header', async () => {
     if (!userId) throw new Error('userId not set (signup failed)');
@@ -155,16 +155,16 @@ async function run() {
     return 'correctly rejected with 401';
   });
 
-  await test('POST /api/expense/create  →  201 with valid JWT', async () => {
+  await test('POST /api/expense/create  →  201 with valid JWT; body userId is ignored (Phase 3b)', async () => {
     if (!token) throw new Error('No token available');
+    const fakeId = '000000000000000000000001';
     const { status, data } = await post(
       `${BASE}/api/expense/create`,
-      { userId, amount: 42, category: 'Smoke', description: 'JWT test', date: new Date().toISOString() },
+      { userId: fakeId, amount: 42, category: 'Smoke', description: 'JWT test', date: new Date().toISOString() },
       bearer(token),
     );
     if (status !== 201) throw new Error(`HTTP ${status}: ${JSON.stringify(data)}`);
-    // TODO [SECURITY-3b]: userId still trusted from body — Phase 3b will derive it from JWT instead
-    return `expenseId=${data.expense._id}`;
+    return `expenseId=${data.expense._id}  (body sent fakeId=${fakeId}, backend used JWT userId instead)`;
   });
 
   await test('POST /api/expense/create  →  401 with tampered/invalid JWT', async () => {

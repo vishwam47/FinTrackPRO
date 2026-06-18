@@ -4,7 +4,8 @@ const User = require("../models/User");
 // Create Income and link to user
 const createIncome = async (req, res) => {
   try {
-    const { userId, amount, source, description, date } = req.body;
+    const userId = req.user.userId;
+    const { amount, source, description, date } = req.body;
 
     const newIncome = new Income({ amount, source, description, date });
     await newIncome.save();
@@ -21,7 +22,7 @@ const createIncome = async (req, res) => {
 // Get all Income for a user
 const getIncome = async (req, res) => {
   try {
-    const { userId } = req.body;
+    const userId = req.user.userId;
 
     const user = await User.findById(userId).populate("income");
 
@@ -61,7 +62,8 @@ const updateIncome = async (req, res) => {
 // Delete Income and unlink from user
 const deleteIncome = async (req, res) => {
   try {
-    const { userId, incomeId } = req.body;
+    const userId = req.user.userId;
+    const { incomeId } = req.body;
 
     const deletedIncome = await Income.findByIdAndDelete(incomeId);
 

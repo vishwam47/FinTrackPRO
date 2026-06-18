@@ -4,15 +4,9 @@ const User = require("../models/User");
 // Create Expense and link to user
 const createExpense = async (req, res) => {
   try {
-    const {
-      userId,
-      amount,
-      category,
-      description,
-      date,
-      isRecurring,
-      receiptImage,
-    } = req.body;
+    const userId = req.user.userId;
+    const { amount, category, description, date, isRecurring, receiptImage } =
+      req.body;
 
     const newExpense = new Expense({
       amount,
@@ -38,7 +32,7 @@ const createExpense = async (req, res) => {
 // Get all Expenses for a user
 const getExpenses = async (req, res) => {
   try {
-    const { userId } = req.body;
+    const userId = req.user.userId;
 
     const user = await User.findById(userId).populate("expenses");
 
@@ -88,7 +82,8 @@ const updateExpense = async (req, res) => {
 // Delete Expense and unlink from user
 const deleteExpense = async (req, res) => {
   try {
-    const { userId, expenseId } = req.body;
+    const userId = req.user.userId;
+    const { expenseId } = req.body;
 
     const deletedExpense = await Expense.findByIdAndDelete(expenseId);
 

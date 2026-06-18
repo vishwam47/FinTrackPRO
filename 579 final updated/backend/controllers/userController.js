@@ -74,7 +74,7 @@ const login = async (req, res) => {
 
 const getSingleUser = async (req, res) => {
   try {
-    const { userId } = req.body;
+    const userId = req.user.userId;
 
     const user = await User.findById(userId)
       .populate("expenses")

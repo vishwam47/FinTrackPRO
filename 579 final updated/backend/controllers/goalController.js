@@ -4,7 +4,8 @@ const User = require("../models/User");
 // Create Goal and link to user
 const createGoal = async (req, res) => {
   try {
-    const { userId, title, targetAmount, currentAmount, targetDate } = req.body;
+    const userId = req.user.userId;
+    const { title, targetAmount, currentAmount, targetDate } = req.body;
 
     const newGoal = new Goal({
       title,
@@ -26,7 +27,7 @@ const createGoal = async (req, res) => {
 // Get all Goals for a user
 const getGoals = async (req, res) => {
   try {
-    const { userId } = req.body;
+    const userId = req.user.userId;
 
     const user = await User.findById(userId).populate("goal");
 
@@ -66,7 +67,8 @@ const updateGoal = async (req, res) => {
 // Delete Goal and unlink from user
 const deleteGoal = async (req, res) => {
   try {
-    const { userId, goalId } = req.body;
+    const userId = req.user.userId;
+    const { goalId } = req.body;
 
     const deletedGoal = await Goal.findByIdAndDelete(goalId);
 
