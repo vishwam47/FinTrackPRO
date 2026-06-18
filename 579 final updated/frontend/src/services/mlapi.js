@@ -100,4 +100,8 @@ export const stockNewsFraudAPI = {
   checkText: (data) => mlApi.post('/stock_news_fraud/check-text', data),
 };
 
+export const stockRecommenderAPI = {
+  recommend: (data) => mlApi.post('/stock_recommender/recommend-stocks', data, { timeout: 120000 }),
+};
+
 export default mlApi;

@@ -15,6 +15,7 @@ import Crypto from './pages/Crypto';
 import AIAnalyst from './pages/AIAnalyst';
 import NewsFraud from './pages/NewsFraud';
 import StockSignals from './pages/StockSignals';
+import FinanceAnalysis from './pages/FinanceAnalysis';
 
 const App = () => {
   return (
@@ -36,6 +37,7 @@ const App = () => {
           <Route path="/ai-analyst" element={<AIAnalyst />} />
           <Route path="/news-fraud" element={<NewsFraud />} />
           <Route path="/stock-signals" element={<StockSignals />} />
+          <Route path="/smart-invest" element={<FinanceAnalysis />} />
         </Routes>
       </BrowserRouter>
     </>

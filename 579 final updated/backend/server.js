@@ -17,6 +17,7 @@ const incomeRoutes = require("./routes/incomeRoutes");
 const goalRoutes = require("./routes/goalRoutes");
 const loanRoutes = require("./routes/loanRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
+const financeRoutes = require("./routes/financeRoutes");
 
 const app = express();
 const PORT = 5000;
@@ -34,6 +35,7 @@ app.use("/api/income", incomeRoutes);
 app.use("/api/goal", goalRoutes);
 app.use("/api/loan", loanRoutes);
 app.use("/api/notification", notificationRoutes);
+app.use("/api/finance", financeRoutes);
 
 const transporter = nodemailer.createTransport({
   service: process.env.EMAIL_SERVICE || "gmail",

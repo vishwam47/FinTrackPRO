@@ -74,6 +74,11 @@ export const notificationAPI = {
   markAsRead: (notificationId) => api.post('/api/notification/mark-read', { notificationId }),
 };
 
+export const financeAPI = {
+  analyze: (data) => api.post('/api/finance/analyze', data),
+  getProfile: (month) => api.get(`/api/finance/profile?month=${month}`),
+};
+
 export const emailAPI = {
   sendOTP: (email) => api.post('/api/send-otp', { email }),
   sendBudgetAlert: (data) => api.post('/api/send-budget-alert', data),

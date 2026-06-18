@@ -18,6 +18,7 @@ try:
     from Stock_Suggestions.stock_suggestions_api import app as stock_suggestions_app
     from Gemini_Stock_Analysis.gemini_stock_api import app as gemini_stock_app
     from Stock_News_Fraud.stock_news_fraud_api import app as stock_news_fraud_app
+    from stock_recommender import app as stock_recommender_app
 except ImportError as e:
     print(f"Import Error: {e}")
     print("Make sure all required dependencies are installed and paths are correct")
@@ -56,6 +57,7 @@ main_app.mount("/transaction_fraud", transaction_fraud_app)
 main_app.mount("/stock_suggestions", stock_suggestions_app)
 main_app.mount("/gemini_stock", gemini_stock_app)
 main_app.mount("/stock_news_fraud", stock_news_fraud_app)
+main_app.mount("/stock_recommender", stock_recommender_app)
 
 @main_app.get("/")
 async def root():

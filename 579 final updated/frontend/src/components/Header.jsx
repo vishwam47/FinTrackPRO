@@ -78,6 +78,13 @@ const Header = () => {
                 >
                   <FiShield className="mr-1" /> Fraud
                 </Link>
+                <Link
+                  to="/smart-invest"
+                  className="text-green-600 hover:text-green-800 px-2 py-2 rounded-md text-sm font-semibold flex items-center"
+                  title="Smart Invest Hub"
+                >
+                  <GiMoneyStack className="mr-1" /> Smart Invest
+                </Link>
 
                 {/* Stock Signal Notification Bell */}
                 <div className="ml-1">
