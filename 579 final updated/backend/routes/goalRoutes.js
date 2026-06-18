@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+const auth = require("../middleware/auth");
 const {
   createGoal,
   getGoals,
@@ -7,7 +8,8 @@ const {
   deleteGoal,
 } = require("../controllers/goalController");
 
-// Only POST requests
+router.use(auth);
+
 router.post("/create", createGoal);
 router.post("/get", getGoals);
 router.post("/update", updateGoal);

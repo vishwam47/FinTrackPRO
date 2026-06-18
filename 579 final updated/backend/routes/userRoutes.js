@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+const auth = require("../middleware/auth");
 const {
   signup,
   login,
@@ -8,11 +9,10 @@ const {
   forgotPassword,
 } = require("../controllers/userController");
 
-// Only POST requests as per your requirement
 router.post("/signup", signup);
 router.post("/login", login);
-router.post("/getuser", getSingleUser);
 router.post("/checkemail", checkEmail);
 router.post("/forgotPassword", forgotPassword);
+router.post("/getuser", auth, getSingleUser);
 
 module.exports = router;

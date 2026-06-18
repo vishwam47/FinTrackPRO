@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { FiUser, FiLock, FiMail, FiArrowRight } from "react-icons/fi";
 import { motion } from "framer-motion";
-import axios from "axios";
+import api from "../services/api";
 
 const Signup = () => {
   const [formData, setFormData] = useState({
@@ -14,14 +14,6 @@ const Signup = () => {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
-
-  // Create an Axios instance with base URL
-  const api = axios.create({
-    baseURL: "http://localhost:5000/api",
-    headers: {
-      "Content-Type": "application/json",
-    },
-  });
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -45,20 +37,14 @@ const Signup = () => {
 
     try {
       // Using Axios for the POST request
-      const response = await api.post("/user/signup", {
+      const response = await api.post("/api/user/signup", {
         name: formData.name,
         email: formData.email,
         password: formData.password,
       });
 
-      // Successful registration
       localStorage.setItem("token", response.data.token);
       localStorage.setItem("user", JSON.stringify(response.data.user));
-
-      // Set default Authorization header for future requests
-      api.defaults.headers.common[
-        "Authorization"
-      ] = `Bearer ${response.data.token}`;
 
       // Redirect to dashboard or verification page
       navigate("/login");

@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { FiUser, FiLock, FiMail, FiArrowRight, FiX } from "react-icons/fi";
 import { motion, AnimatePresence } from "framer-motion";
-import axios from "axios";
+import api from "../services/api";
 
 const Login = () => {
   const [email, setEmail] = useState("");
@@ -20,29 +20,19 @@ const Login = () => {
   const [otpVerified, setOtpVerified] = useState(false);
   const navigate = useNavigate();
 
-  const api = axios.create({
-    baseURL: "http://localhost:5000/api",
-    headers: {
-      "Content-Type": "application/json",
-    },
-  });
-
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
     setError("");
 
     try {
-      const response = await api.post("/user/login", {
+      const response = await api.post("/api/user/login", {
         email,
         password,
       });
 
       localStorage.setItem("token", response.data.token);
       localStorage.setItem("user", JSON.stringify(response.data.user));
-      api.defaults.headers.common[
-        "Authorization"
-      ] = `Bearer ${response.data.token}`;
       navigate("/");
     } catch (err) {
       if (err.response) {
@@ -65,12 +55,12 @@ const Login = () => {
 
     try {
       setLoading(true);
-      const response = await api.post("/user/checkemail", {
+      const response = await api.post("/api/user/checkemail", {
         email: forgotEmail,
       });
 
       if (response.data.success) {
-        const { data } = await api.post("/send-otp", { email: forgotEmail });
+        const { data } = await api.post("/api/send-otp", { email: forgotEmail });
         setSendOtp(data?.otp);
         setOtpSent(true);
         setError("");
@@ -114,7 +104,7 @@ const Login = () => {
 
     try {
       setLoading(true);
-      const response = await api.post("/user/forgotPassword", {
+      const response = await api.post("/api/user/forgotPassword", {
         email: forgotEmail,
         newPassword,
       });

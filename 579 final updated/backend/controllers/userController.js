@@ -1,5 +1,9 @@
 const User = require("../models/User");
 const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
+
+const signToken = (userId) =>
+  jwt.sign({ userId }, process.env.JWT_SECRET, { expiresIn: "7d" });
 
 const signup = async (req, res) => {
   try {
@@ -26,10 +30,10 @@ const signup = async (req, res) => {
       email: newUser.email,
     };
 
-    res.status(201).json({ 
-      message: "User registered successfully", 
+    res.status(201).json({
+      message: "User registered successfully",
       user: userResponse,
-      token: "dummy-token-" + newUser._id
+      token: signToken(newUser._id),
     });
   } catch (error) {
     console.error(error);
@@ -57,10 +61,10 @@ const login = async (req, res) => {
       email: user.email,
     };
 
-    res.status(200).json({ 
-      message: "Login successful", 
+    res.status(200).json({
+      message: "Login successful",
       user: userResponse,
-      token: "dummy-token-" + user._id
+      token: signToken(user._id),
     });
   } catch (error) {
     console.error(error);

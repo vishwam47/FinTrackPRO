@@ -14,7 +14,7 @@ import {
   FiPieChart,
 } from "react-icons/fi";
 import { motion, AnimatePresence } from "framer-motion";
-import axios from "axios";
+import api from "../services/api";
 import Header from "../components/Header";
 import { CircularProgressbar } from "react-circular-progressbar";
 import "react-circular-progressbar/dist/styles.css";
@@ -45,9 +45,7 @@ const Goals = () => {
   const fetchGoals = async () => {
     try {
       setIsLoading(true);
-      const { data } = await axios.post("http://localhost:5000/api/goal/get", {
-        userId: user._id,
-      });
+      const { data } = await api.post("/api/goal/get", { userId: user._id });
       setGoals(data.goals || []);
       setIsLoading(false);
     } catch (error) {
@@ -65,24 +63,14 @@ const Goals = () => {
     e.preventDefault();
     try {
       const endpoint = selectedGoal
-        ? "http://localhost:5000/api/goal/update"
-        : "http://localhost:5000/api/goal/create";
+        ? "/api/goal/update"
+        : "/api/goal/create";
 
       const payload = selectedGoal
-        ? {
-            goalId: selectedGoal._id,
-            ...formData,
-          }
-        : {
-            userId: user._id,
-            ...formData,
-          };
+        ? { goalId: selectedGoal._id, ...formData }
+        : { userId: user._id, ...formData };
 
-      await axios.post(endpoint, payload, {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem("token")}`,
-        },
-      });
+      await api.post(endpoint, payload);
 
       setIsModalOpen(false);
       setSelectedGoal(null);
@@ -103,18 +91,10 @@ const Goals = () => {
 
   const handleDelete = async () => {
     try {
-      await axios.post(
-        "http://localhost:5000/api/goal/delete",
-        {
-          userId: user._id,
-          goalId: selectedGoal._id,
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem("token")}`,
-          },
-        }
-      );
+      await api.post("/api/goal/delete", {
+        userId: user._id,
+        goalId: selectedGoal._id,
+      });
 
       setIsDeleteModalOpen(false);
       setSelectedGoal(null);

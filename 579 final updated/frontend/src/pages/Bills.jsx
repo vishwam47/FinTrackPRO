@@ -15,7 +15,7 @@ import {
   FiTrendingDown,
 } from "react-icons/fi";
 import { motion, AnimatePresence } from "framer-motion";
-import axios from "axios";
+import api from "../services/api";
 import Header from "../components/Header";
 import { Bar, Pie } from "react-chartjs-2";
 import { Chart as ChartJS, registerables } from "chart.js";
@@ -60,10 +60,9 @@ const Bills = () => {
   const getUserData = async () => {
     try {
       setLoading(true);
-      const { data } = await axios.post(
-        "http://localhost:5000/api/user/getuser",
-        { userId: user?._id }
-      );
+      const { data } = await api.post("/api/user/getuser", {
+        userId: user?._id,
+      });
       setUserData(data?.user);
     } catch (error) {
       console.error("Error fetching user data:", error);
@@ -137,7 +136,7 @@ const Bills = () => {
         const year = now.getFullYear();
         const percentage = Math.round((totalExpenses / totalIncome) * 100);
 
-        await axios.post("http://localhost:5000/api/send-budget-alert", {
+        await api.post("/api/send-budget-alert", {
           email: userData.email,
           category: "Overall Expenses",
           percentage,
@@ -180,32 +179,26 @@ const Bills = () => {
 
     try {
       if (editingExpense) {
-        await axios.post(
-          "http://localhost:5000/api/expense/update",
-          {
-            expenseId: editingExpense._id,
-            amount: Number(formData.amount),
-            category: formData.category,
-            description: formData.description,
-            date: formData.date,
-            isRecurring: false,
-            receiptImage: formData.receiptImage,
-          }
-        );
+        await api.post("/api/expense/update", {
+          expenseId: editingExpense._id,
+          amount: Number(formData.amount),
+          category: formData.category,
+          description: formData.description,
+          date: formData.date,
+          isRecurring: false,
+          receiptImage: formData.receiptImage,
+        });
         alert("Expense updated successfully!");
       } else {
-        await axios.post(
-          "http://localhost:5000/api/expense/create",
-          {
-            userId: user?._id,
-            amount: Number(formData.amount),
-            category: formData.category,
-            description: formData.description,
-            date: formData.date,
-            isRecurring: false,
-            receiptImage: formData.receiptImage,
-          }
-        );
+        await api.post("/api/expense/create", {
+          userId: user?._id,
+          amount: Number(formData.amount),
+          category: formData.category,
+          description: formData.description,
+          date: formData.date,
+          isRecurring: false,
+          receiptImage: formData.receiptImage,
+        });
         alert("Expense added successfully!");
       }
 
@@ -250,7 +243,7 @@ const Bills = () => {
   const handleDelete = async (expenseId) => {
     if (window.confirm("Are you sure you want to delete this expense?")) {
       try {
-        await axios.post(`http://localhost:5000/api/expense/delete`, {
+        await api.post("/api/expense/delete", {
           userId: user?._id,
           expenseId,
         });
