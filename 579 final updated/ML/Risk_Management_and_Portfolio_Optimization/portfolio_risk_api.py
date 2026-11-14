@@ -62,7 +62,7 @@ app.add_middleware(
 
 # Configuration
 class Settings:
-    FRED_API_KEY = os.getenv("FRED_API_KEY", "your-fred-api-key")
+    FRED_API_KEY = os.getenv("FRED_API_KEY", "")
     DATA_DIR = "data/portfolio"
     RISK_FREE_RATE = 0.02  # Default 2% risk-free rate
 

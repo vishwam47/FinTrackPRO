@@ -34,8 +34,8 @@ app.add_middleware(
 # Configuration
 class Settings:
     FINA_API_URL = "https://app.fina.money/api/resource/categorize"
-    FINA_API_KEY = os.getenv("FINA_API_KEY", "fina-api-test")  # Use environment variable in production
-    PARTNER_ID = os.getenv("PARTNER_ID", "your-partner-id")   # Set your actual partner ID
+    FINA_API_KEY = os.getenv("FINA_API_KEY", "")
+    PARTNER_ID = os.getenv("PARTNER_ID", "")
 
 settings = Settings()
 

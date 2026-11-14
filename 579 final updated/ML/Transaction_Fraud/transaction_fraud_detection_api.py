@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 import logging
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -19,7 +20,8 @@ app = FastAPI(
 
 # Load the trained model and scaler
 try:
-    with open('Transaction_Fraud/xgb_model.pkl', 'rb') as file:
+    model_path = Path(__file__).resolve().parent / 'xgb_model.pkl'
+    with open(model_path, 'rb') as file:
         model = pickle.load(file)
     logger.info("XGBoost model loaded successfully")
 except FileNotFoundError:

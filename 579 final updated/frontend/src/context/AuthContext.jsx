@@ -1,4 +1,5 @@
 import React, { createContext, useState, useContext, useEffect } from 'react';
+import { userAPI } from '../services/api';
 
 const AuthContext = createContext(null);
 
@@ -11,11 +12,32 @@ export const AuthProvider = ({ children }) => {
     const storedToken = localStorage.getItem('token');
     const storedUser = localStorage.getItem('user');
     
-    if (storedToken && storedUser) {
-      setToken(storedToken);
-      setUser(JSON.parse(storedUser));
-    }
-    setLoading(false);
+    let isMounted = true;
+    const restoreSession = async () => {
+      if (!storedToken || !storedUser) {
+        if (isMounted) setLoading(false);
+        return;
+      }
+      try {
+        const parsedUser = JSON.parse(storedUser);
+        const response = await userAPI.getProfile();
+        if (isMounted) {
+          setToken(storedToken);
+          setUser(response.data.user || parsedUser);
+        }
+      } catch {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        if (isMounted) {
+          setToken(null);
+          setUser(null);
+        }
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    };
+    restoreSession();
+    return () => { isMounted = false; };
   }, []);
 
   const login = (userData, userToken) => {
@@ -44,6 +66,7 @@ export const AuthProvider = ({ children }) => {
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const useAuth = () => {
   const context = useContext(AuthContext);
   if (!context) {

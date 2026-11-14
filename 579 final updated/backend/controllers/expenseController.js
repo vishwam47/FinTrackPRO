@@ -50,6 +50,7 @@ const getExpenses = async (req, res) => {
 // Update Expense
 const updateExpense = async (req, res) => {
   try {
+    const userId = req.user.userId;
     const {
       expenseId,
       amount,
@@ -60,10 +61,14 @@ const updateExpense = async (req, res) => {
       receiptImage,
     } = req.body;
 
+    if (!(await User.exists({ _id: userId, expenses: expenseId }))) {
+      return res.status(404).json({ message: "Expense not found" });
+    }
+
     const updatedExpense = await Expense.findByIdAndUpdate(
       expenseId,
       { amount, category, description, date, isRecurring, receiptImage },
-      { new: true }
+      { new: true, runValidators: true }
     );
 
     if (!updatedExpense) {
@@ -85,6 +90,9 @@ const deleteExpense = async (req, res) => {
     const userId = req.user.userId;
     const { expenseId } = req.body;
 
+    if (!(await User.exists({ _id: userId, expenses: expenseId }))) {
+      return res.status(404).json({ message: "Expense not found" });
+    }
     const deletedExpense = await Expense.findByIdAndDelete(expenseId);
 
     if (!deletedExpense) {

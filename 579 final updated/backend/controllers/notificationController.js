@@ -45,11 +45,14 @@ const getNotifications = async (req, res) => {
 const updateNotification = async (req, res) => {
   try {
     const { notificationId, type, message, isRead, date } = req.body;
+    if (!(await User.exists({ _id: req.user.userId, notification: notificationId }))) {
+      return res.status(404).json({ message: "Notification not found" });
+    }
 
     const updatedNotification = await Notification.findByIdAndUpdate(
       notificationId,
       { type, message, isRead, date },
-      { new: true }
+      { new: true, runValidators: true }
     );
 
     if (!updatedNotification) {
@@ -74,6 +77,9 @@ const deleteNotification = async (req, res) => {
     const userId = req.user.userId;
     const { notificationId } = req.body;
 
+    if (!(await User.exists({ _id: userId, notification: notificationId }))) {
+      return res.status(404).json({ message: "Notification not found" });
+    }
     const deletedNotification = await Notification.findByIdAndDelete(
       notificationId
     );

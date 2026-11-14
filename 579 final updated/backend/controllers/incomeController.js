@@ -41,11 +41,14 @@ const getIncome = async (req, res) => {
 const updateIncome = async (req, res) => {
   try {
     const { incomeId, amount, source, description, date } = req.body;
+    if (!(await User.exists({ _id: req.user.userId, income: incomeId }))) {
+      return res.status(404).json({ message: "Income record not found" });
+    }
 
     const updatedIncome = await Income.findByIdAndUpdate(
       incomeId,
       { amount, source, description, date },
-      { new: true }
+      { new: true, runValidators: true }
     );
 
     if (!updatedIncome) {
@@ -65,6 +68,9 @@ const deleteIncome = async (req, res) => {
     const userId = req.user.userId;
     const { incomeId } = req.body;
 
+    if (!(await User.exists({ _id: userId, income: incomeId }))) {
+      return res.status(404).json({ message: "Income record not found" });
+    }
     const deletedIncome = await Income.findByIdAndDelete(incomeId);
 
     if (!deletedIncome) {

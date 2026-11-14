@@ -5,14 +5,16 @@ import pickle
 import pandas as pd
 import numpy as np
 from typing import Optional
+from pathlib import Path
 
 # Initialize FastAPI app
 app = FastAPI(title="Credit Card Fraud Detection API", version="1.0.0")
 
 # Load the trained model
 try:
-    model = joblib.load('Fraud_Detection/fraud_detection_model.pkl')
-    with open('Fraud_Detection/feature_columns.pkl', 'rb') as f:
+    model_dir = Path(__file__).resolve().parent
+    model = joblib.load(model_dir / 'fraud_detection_model.pkl')
+    with open(model_dir / 'feature_columns.pkl', 'rb') as f:
         feature_columns = pickle.load(f)
     print("Model loaded successfully!")
 except Exception as e:

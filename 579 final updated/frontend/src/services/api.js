@@ -1,6 +1,8 @@
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
+const configuredApiBase = import.meta.env.VITE_API_BASE_URL || '';
+const isLocalHost = (value) => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(?:\/|$)/i.test(value);
+export const API_BASE_URL = import.meta.env.PROD && isLocalHost(configuredApiBase) ? '' : configuredApiBase;
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -27,61 +29,54 @@ api.interceptors.response.use(
 );
 
 export const userAPI = {
-  register: (data) => api.post('/api/user/register', data),
+  register: (data) => api.post('/api/user/signup', data),
   login: (data) => api.post('/api/user/login', data),
-  getProfile: (userId) => api.post('/api/user/profile', { userId }),
-  updateProfile: (data) => api.post('/api/user/update', data),
-  forgotPassword: (email) => api.post('/api/user/forgot-password', { email }),
+  getProfile: () => api.post('/api/user/getuser'),
 };
 
 export const expenseAPI = {
   create: (data) => api.post('/api/expense/create', data),
-  getAll: (userId) => api.post('/api/expense/get', { userId }),
+  getAll: () => api.post('/api/expense/get'),
   update: (data) => api.post('/api/expense/update', data),
-  delete: (userId, expenseId) => api.post('/api/expense/delete', { userId, expenseId }),
+  delete: (_userId, expenseId) => api.post('/api/expense/delete', { expenseId }),
 };
 
 export const incomeAPI = {
   create: (data) => api.post('/api/income/create', data),
-  getAll: (userId) => api.post('/api/income/get', { userId }),
+  getAll: () => api.post('/api/income/get'),
   update: (data) => api.post('/api/income/update', data),
-  delete: (userId, incomeId) => api.post('/api/income/delete', { userId, incomeId }),
+  delete: (_userId, incomeId) => api.post('/api/income/delete', { incomeId }),
 };
 
 export const budgetAPI = {
   create: (data) => api.post('/api/budget/create', data),
-  getAll: (userId) => api.post('/api/budget/get', { userId }),
+  getAll: () => api.post('/api/budget/get'),
   update: (data) => api.post('/api/budget/update', data),
-  delete: (userId, budgetId) => api.post('/api/budget/delete', { userId, budgetId }),
+  delete: (_userId, budgetId) => api.post('/api/budget/delete', { budgetId }),
 };
 
 export const goalAPI = {
   create: (data) => api.post('/api/goal/create', data),
-  getAll: (userId) => api.post('/api/goal/get', { userId }),
+  getAll: () => api.post('/api/goal/get'),
   update: (data) => api.post('/api/goal/update', data),
-  delete: (userId, goalId) => api.post('/api/goal/delete', { userId, goalId }),
+  delete: (_userId, goalId) => api.post('/api/goal/delete', { goalId }),
 };
 
 export const loanAPI = {
   create: (data) => api.post('/api/loan/create', data),
-  getAll: (userId) => api.post('/api/loan/get', { userId }),
+  getAll: () => api.post('/api/loan/get'),
   update: (data) => api.post('/api/loan/update', data),
-  delete: (userId, loanId) => api.post('/api/loan/delete', { userId, loanId }),
+  delete: (_userId, loanId) => api.post('/api/loan/delete', { loanId }),
 };
 
 export const notificationAPI = {
-  getAll: (userId) => api.post('/api/notification/get', { userId }),
-  markAsRead: (notificationId) => api.post('/api/notification/mark-read', { notificationId }),
+  getAll: () => api.post('/api/notification/get'),
+  markAsRead: (notificationId) => api.post('/api/notification/update', { notificationId, isRead: true }),
 };
 
 export const financeAPI = {
   analyze: (data) => api.post('/api/finance/analyze', data),
   getProfile: (month) => api.get(`/api/finance/profile?month=${month}`),
-};
-
-export const emailAPI = {
-  sendOTP: (email) => api.post('/api/send-otp', { email }),
-  sendBudgetAlert: (data) => api.post('/api/send-budget-alert', data),
 };
 
 export default api;

@@ -28,6 +28,7 @@ import {
   SiChainlink,
 } from "react-icons/si";
 import Header from "../components/Header";
+import { cryptoAPI } from "../services/mlapi";
 
 const Crypto = () => {
   const [trendingData, setTrendingData] = useState([]);
@@ -43,22 +44,12 @@ const Crypto = () => {
       try {
         setLoading(true);
 
-        const trendingResponse = await fetch(
-          "http://localhost:8000/cryptocurrency_analysis_and_trading/crypto/trending"
-        );
-        const marketResponse = await fetch(
-          "http://localhost:8000/cryptocurrency_analysis_and_trading/crypto/market-overview"
-        );
-
-        if (!trendingResponse.ok || !marketResponse.ok) {
-          throw new Error("Failed to fetch data");
-        }
-
-        const trendingJson = await trendingResponse.json();
-        const marketJson = await marketResponse.json();
-
-        setTrendingData(trendingJson.data);
-        setMarketData(marketJson.data);
+        const [trendingResponse, marketResponse] = await Promise.all([
+          cryptoAPI.getTrending(),
+          cryptoAPI.getMarketOverview(),
+        ]);
+        setTrendingData(trendingResponse.data.data);
+        setMarketData(marketResponse.data.data);
         setLoading(false);
       } catch (err) {
         setError(err.message);

@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { FiUser, FiLock, FiMail, FiArrowRight, FiX } from "react-icons/fi";
 import { motion, AnimatePresence } from "framer-motion";
 import api from "../services/api";
+import { useAuth } from "../context/AuthContext";
 
 const Login = () => {
   const [email, setEmail] = useState("");
@@ -10,18 +11,33 @@ const Login = () => {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [showForgotPassword, setShowForgotPassword] = useState(false);
-  const [forgotEmail, setForgotEmail] = useState("");
-  const [otpSent, setOtpSent] = useState(false);
-  const [otp, setOtp] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
-  const [resetSuccess, setResetSuccess] = useState(false);
-  const [sendOtp, setSendOtp] = useState("");
-  const [otpVerified, setOtpVerified] = useState(false);
+  const otpSent = false;
+  const otpVerified = false;
+  const resetSuccess = false;
+  const forgotEmail = "";
   const navigate = useNavigate();
+  const { login } = useAuth();
+
+  const handleDemoLogin = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await api.post("/api/user/demo-login");
+      login(response.data.user, response.data.token);
+      navigate("/");
+    } catch (err) {
+      setError(err.response?.data?.message || "Could not start a demo session");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (email.trim().toLowerCase() === "demo@fintrackpro.app") {
+      await handleDemoLogin();
+      return;
+    }
     setLoading(true);
     setError("");
 
@@ -31,8 +47,7 @@ const Login = () => {
         password,
       });
 
-      localStorage.setItem("token", response.data.token);
-      localStorage.setItem("user", JSON.stringify(response.data.user));
+      login(response.data.user, response.data.token);
       navigate("/");
     } catch (err) {
       if (err.response) {
@@ -47,93 +62,7 @@ const Login = () => {
     }
   };
 
-  const handleForgotPassword = async () => {
-    if (!forgotEmail) {
-      setError("Please enter your email");
-      return;
-    }
-
-    try {
-      setLoading(true);
-      const response = await api.post("/api/user/checkemail", {
-        email: forgotEmail,
-      });
-
-      if (response.data.success) {
-        const { data } = await api.post("/api/send-otp", { email: forgotEmail });
-        setSendOtp(data?.otp);
-        setOtpSent(true);
-        setError("");
-      } else {
-        setError("Email not found. Please check and try again.");
-      }
-    } catch (err) {
-      setError(err.response?.data?.message || "Failed to process your request");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const verifyOtp = async () => {
-    if (!otp) {
-      setError("Please enter the OTP");
-      return;
-    }
-
-    try {
-      setLoading(true);
-      if (sendOtp == otp) {
-        setOtpVerified(true);
-        setError("");
-      } else {
-        setError("Invalid OTP. Please try again.");
-      }
-    } catch (err) {
-      setError(err.response?.data?.message || "Failed to verify OTP");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handlePasswordReset = async () => {
-    if (newPassword !== confirmPassword) {
-      setError("Passwords don't match");
-      console.log("Passwords don't match");
-      return;
-    }
-
-    try {
-      setLoading(true);
-      const response = await api.post("/api/user/forgotPassword", {
-        email: forgotEmail,
-        newPassword,
-      });
-
-      if (response.data.success) {
-        setResetSuccess(true);
-        setError("");
-        setTimeout(() => {
-          closeModal();
-        }, 2000);
-      }
-    } catch (err) {
-      setError(err.response?.data?.message || "Failed to reset password");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const closeModal = () => {
-    setShowForgotPassword(false);
-    setForgotEmail("");
-    setOtpSent(false);
-    setOtp("");
-    setNewPassword("");
-    setConfirmPassword("");
-    setResetSuccess(false);
-    setOtpVerified(false);
-    setError("");
-  };
+  const closeModal = () => setShowForgotPassword(false);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 flex items-center justify-center p-4">
@@ -162,6 +91,9 @@ const Login = () => {
           )}
 
           <form onSubmit={handleSubmit} className="space-y-6">
+            <p className="-mb-3 text-sm text-gray-600">
+              Demo access: use <strong>demo@fintrackpro.app</strong> with any password, or start a fresh demo session below.
+            </p>
             <div>
               <label
                 htmlFor="email"
@@ -293,6 +225,12 @@ const Login = () => {
               </a>
             </p>
           </div>
+          <div className="mt-5 border-t pt-5 text-center">
+            <p className="mb-3 text-sm text-gray-600">Portfolio preview uses synthetic data in an isolated demo workspace.</p>
+            <button type="button" onClick={handleDemoLogin} disabled={loading} className="w-full rounded-lg border border-green-600 px-4 py-3 font-medium text-green-700 hover:bg-green-50 disabled:opacity-60">
+              {loading ? "Starting demo..." : "Continue as Demo User"}
+            </button>
+          </div>
         </div>
       </motion.div>
 
@@ -330,8 +268,8 @@ const Login = () => {
               ) : !otpSent ? (
                 <div className="space-y-4">
                   <p className="text-gray-600 mb-4">
-                    Enter your email address and we'll send you an OTP to reset
-                    your password.
+                    Password reset is temporarily unavailable. Contact the site
+                    administrator to recover your account.
                   </p>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -340,19 +278,16 @@ const Login = () => {
                     <input
                       type="email"
                       value={forgotEmail}
-                      onChange={(e) => setForgotEmail(e.target.value)}
+                      disabled
                       className="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500"
                       placeholder="you@example.com"
                     />
                   </div>
                   <button
-                    onClick={handleForgotPassword}
-                    disabled={loading}
-                    className={`w-full py-2 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 ${
-                      loading ? "opacity-70 cursor-not-allowed" : ""
-                    }`}
+                    disabled
+                    className="w-full py-2 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-gray-400 cursor-not-allowed"
                   >
-                    {loading ? "Sending OTP..." : "Send OTP"}
+                    Password reset unavailable
                   </button>
                 </div>
               ) : !otpVerified ? (
@@ -366,15 +301,14 @@ const Login = () => {
                     </label>
                     <input
                       type="text"
-                      value={otp}
-                      onChange={(e) => setOtp(e.target.value)}
+                      value=""
+                      disabled
                       className="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500"
                       placeholder="Enter 6-digit OTP"
                     />
                   </div>
                   <button
-                    onClick={verifyOtp}
-                    disabled={loading}
+                    disabled
                     className={`w-full py-2 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 ${
                       loading ? "opacity-70 cursor-not-allowed" : ""
                     }`}
@@ -393,8 +327,8 @@ const Login = () => {
                     </label>
                     <input
                       type="password"
-                      value={newPassword}
-                      onChange={(e) => setNewPassword(e.target.value)}
+                      value=""
+                      disabled
                       className="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500"
                       placeholder="••••••••"
                     />
@@ -405,15 +339,14 @@ const Login = () => {
                     </label>
                     <input
                       type="password"
-                      value={confirmPassword}
-                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      value=""
+                      disabled
                       className="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500"
                       placeholder="••••••••"
                     />
                   </div>
                   <button
-                    onClick={handlePasswordReset}
-                    disabled={loading}
+                    disabled
                     className={`w-full py-2 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 ${
                       loading ? "opacity-70 cursor-not-allowed" : ""
                     }`}

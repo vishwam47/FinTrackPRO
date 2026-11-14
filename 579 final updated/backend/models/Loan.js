@@ -2,10 +2,10 @@ const mongoose = require("mongoose");
 
 const debtSchema = new mongoose.Schema(
   {
-    lender: { type: String, required: true },
-    totalAmount: { type: Number, required: true },
-    paidAmount: { type: Number, default: 0 },
-    emiAmount: { type: Number },
+    lender: { type: String, required: true, trim: true, maxlength: 120 },
+    totalAmount: { type: Number, required: true, min: 0.01 },
+    paidAmount: { type: Number, default: 0, min: 0 },
+    emiAmount: { type: Number, min: 0 },
     dueDate: { type: Date },
     paymentHistory: [
       {

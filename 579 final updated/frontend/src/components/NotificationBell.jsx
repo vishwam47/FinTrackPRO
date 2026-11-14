@@ -1,11 +1,9 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import { FiBell, FiX, FiRefreshCw, FiTrendingUp, FiTrendingDown, FiMinus } from "react-icons/fi";
-import axios from "axios";
+import { stockSuggestionsAPI } from "../services/mlapi";
 
-const ML_URL = import.meta.env.VITE_ML_API_URL || "http://localhost:8000";
 // Dedicated instance with 90s timeout — yfinance batch downloads are slow
-const slowApi = axios.create({ baseURL: ML_URL, timeout: 90000 });
 
 const POLL_INTERVAL = 120000; // poll every 2 minutes (reduce pressure on Yahoo Finance)
 
@@ -34,7 +32,7 @@ const NotificationBell = () => {
     const fetchSuggestions = async () => {
         setLoading(true);
         try {
-            const res = await slowApi.get("/stock_suggestions/suggestions");
+            const res = await stockSuggestionsAPI.getSuggestions();
             const data = res.data;
             setNotifications(data.notifications || []);
             setSummary(data.summary || null);

@@ -47,11 +47,14 @@ const getBudgets = async (req, res) => {
 const updateBudget = async (req, res) => {
   try {
     const { budgetId, category, amount, period, startDate, endDate } = req.body;
+    if (!(await User.exists({ _id: req.user.userId, budget: budgetId }))) {
+      return res.status(404).json({ message: "Budget not found" });
+    }
 
     const updatedBudget = await Budget.findByIdAndUpdate(
       budgetId,
       { category, amount, period, startDate, endDate },
-      { new: true }
+      { new: true, runValidators: true }
     );
 
     if (!updatedBudget) {
@@ -71,6 +74,9 @@ const deleteBudget = async (req, res) => {
     const userId = req.user.userId;
     const { budgetId } = req.body;
 
+    if (!(await User.exists({ _id: userId, budget: budgetId }))) {
+      return res.status(404).json({ message: "Budget not found" });
+    }
     const deletedBudget = await Budget.findByIdAndDelete(budgetId);
 
     if (!deletedBudget) {

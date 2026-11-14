@@ -5,8 +5,14 @@ const analyzeFinance = async (req, res) => {
     const userId = req.user.userId;
     const { month, income, expenses = [], bills = [], savingsPct = 20 } = req.body;
 
-    if (!month || !income) {
-      return res.status(400).json({ message: "month and income are required" });
+    const validRows = (rows, needsCategory) => Array.isArray(rows) && rows.length <= 500 && rows.every((row) =>
+      row && Number.isFinite(row.amount) && row.amount >= 0 &&
+      (!needsCategory || (typeof row.category === "string" && row.category.length <= 64))
+    );
+    if (typeof month !== "string" || !/^\d{4}-(0[1-9]|1[0-2])$/.test(month) ||
+        !Number.isFinite(income) || income <= 0 || !Number.isFinite(savingsPct) || savingsPct < 0 || savingsPct > 100 ||
+        !validRows(expenses, true) || !validRows(bills, false)) {
+      return res.status(400).json({ message: "Enter a valid month, positive income, savings percentage, and expense/bill rows" });
     }
 
     const savingsReserve = income * (savingsPct / 100);
@@ -52,7 +58,7 @@ const analyzeFinance = async (req, res) => {
         riskLabel,
         updatedAt: new Date(),
       },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
+      { upsert: true, new: true, setDefaultsOnInsert: true, runValidators: true }
     );
 
     res.status(200).json({ ...profile.toObject(), safeInvestAmount });
@@ -67,7 +73,7 @@ const getFinanceProfile = async (req, res) => {
     const userId = req.user.userId;
     const { month } = req.query;
 
-    if (!month) {
+    if (typeof month !== "string" || !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
       return res.status(400).json({ message: "month query param required" });
     }
 

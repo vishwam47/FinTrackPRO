@@ -1,6 +1,8 @@
 import axios from 'axios';
 
-const ML_BASE_URL = import.meta.env.VITE_ML_API_URL || 'http://localhost:8000';
+const configuredMlBase = import.meta.env.VITE_ML_API_URL || '';
+const isLocalHost = (value) => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(?:\/|$)/i.test(value);
+export const ML_BASE_URL = import.meta.env.PROD && isLocalHost(configuredMlBase) ? '' : configuredMlBase;
 
 const mlApi = axios.create({
   baseURL: ML_BASE_URL,
@@ -18,6 +20,12 @@ mlApi.interceptors.response.use(
     return Promise.reject(error);
   }
 );
+
+mlApi.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token');
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
 
 export const fraudDetectionAPI = {
   predict: (data) => mlApi.post('/transaction_fraud/predict', data),
@@ -83,7 +91,7 @@ export const mlHealthAPI = {
 // ─── New AI-Powered Services ──────────────────────────────────────────────
 
 export const stockSuggestionsAPI = {
-  getSuggestions: () => mlApi.get('/stock_suggestions/suggestions'),
+  getSuggestions: () => mlApi.get('/stock_suggestions/suggestions', { timeout: 90000 }),
   getCustomSuggestions: (symbols) => mlApi.post('/stock_suggestions/suggestions', { symbols }),
   getRisk: (symbol) => mlApi.get(`/stock_suggestions/risk/${symbol}`),
 };

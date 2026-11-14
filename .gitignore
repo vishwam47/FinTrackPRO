@@ -6,6 +6,7 @@ build/
 __pycache__/
 *.pyc
 venv/
+.venv/
 *.pkl
 *.h5
 *.keras

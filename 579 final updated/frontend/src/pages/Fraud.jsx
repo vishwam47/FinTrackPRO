@@ -1,5 +1,4 @@
 import React, { useState } from "react";
-import axios from "axios";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   FiAlertTriangle,
@@ -11,6 +10,7 @@ import {
   FiX,
 } from "react-icons/fi";
 import Header from "../components/Header";
+import { fraudDetectionAPI } from "../services/mlapi";
 
 const Fraud = () => {
   const [formData, setFormData] = useState({
@@ -48,23 +48,14 @@ const Fraud = () => {
     setError(null);
 
     try {
-      const response = await axios.post(
-        "http://localhost:8000/transaction_fraud/predict",
-        {
+      const response = await fraudDetectionAPI.predict({
           ...formData,
           amount: parseFloat(formData.amount),
           oldbalanceOrg: parseFloat(formData.oldbalanceOrg),
           newbalanceOrig: parseFloat(formData.newbalanceOrig),
           oldbalanceDest: parseFloat(formData.oldbalanceDest),
           newbalanceDest: parseFloat(formData.newbalanceDest),
-        },
-        {
-          headers: {
-            accept: "application/json",
-            "Content-Type": "application/json",
-          },
-        }
-      );
+      });
       setResult(response.data);
       setIsModalOpen(true);
     } catch (err) {

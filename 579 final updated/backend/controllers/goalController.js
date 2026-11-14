@@ -46,11 +46,14 @@ const getGoals = async (req, res) => {
 const updateGoal = async (req, res) => {
   try {
     const { goalId, title, targetAmount, currentAmount, targetDate } = req.body;
+    if (!(await User.exists({ _id: req.user.userId, goal: goalId }))) {
+      return res.status(404).json({ message: "Goal not found" });
+    }
 
     const updatedGoal = await Goal.findByIdAndUpdate(
       goalId,
       { title, targetAmount, currentAmount, targetDate },
-      { new: true }
+      { new: true, runValidators: true }
     );
 
     if (!updatedGoal) {
@@ -70,6 +73,9 @@ const deleteGoal = async (req, res) => {
     const userId = req.user.userId;
     const { goalId } = req.body;
 
+    if (!(await User.exists({ _id: userId, goal: goalId }))) {
+      return res.status(404).json({ message: "Goal not found" });
+    }
     const deletedGoal = await Goal.findByIdAndDelete(goalId);
 
     if (!deletedGoal) {

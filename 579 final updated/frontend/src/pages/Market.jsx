@@ -9,6 +9,7 @@ import {
   FiRefreshCw,
 } from "react-icons/fi";
 import Header from "../components/Header";
+import { marketAPI } from "../services/mlapi";
 import {
   BarChart,
   Bar,
@@ -38,21 +39,8 @@ const Market = () => {
   const fetchMarketData = async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams(filters);
-      const response = await fetch(
-        `http://localhost:8000/algorithmic_trading/market-screener?${params}`,
-        {
-          headers: {
-            Accept: "application/json",
-          },
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error("Failed to fetch market data");
-      }
-
-      const data = await response.json();
+      const response = await marketAPI.screenStocks(filters);
+      const data = response.data;
       setStocks(data.screened_stocks);
       setTotalFound(data.total_found);
       setLoading(false);

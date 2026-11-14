@@ -55,11 +55,14 @@ const updateLoan = async (req, res) => {
       dueDate,
       paymentHistory,
     } = req.body;
+    if (!(await User.exists({ _id: req.user.userId, loan: loanId }))) {
+      return res.status(404).json({ message: "Loan not found" });
+    }
 
     const updatedLoan = await Loan.findByIdAndUpdate(
       loanId,
       { lender, totalAmount, paidAmount, emiAmount, dueDate, paymentHistory },
-      { new: true }
+      { new: true, runValidators: true }
     );
 
     if (!updatedLoan) {
@@ -79,6 +82,9 @@ const deleteLoan = async (req, res) => {
     const userId = req.user.userId;
     const { loanId } = req.body;
 
+    if (!(await User.exists({ _id: userId, loan: loanId }))) {
+      return res.status(404).json({ message: "Loan not found" });
+    }
     const deletedLoan = await Loan.findByIdAndDelete(loanId);
 
     if (!deletedLoan) {
