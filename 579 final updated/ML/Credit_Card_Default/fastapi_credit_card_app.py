@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 import tensorflow as tf
 from tensorflow import keras
 import uvicorn
+from pathlib import Path
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -17,6 +18,7 @@ app = FastAPI(
     description="Predict credit card payment default using machine learning",
     version="1.0.0"
 )
+MODEL_DIR = Path(__file__).resolve().parent
 
 # Add CORS middleware
 app.add_middleware(
@@ -84,23 +86,24 @@ def load_models():
     
     try:
         # Load scaler
-        if os.path.exists('credit_card_scaler.pkl'):
-            scaler = joblib.load('credit_card_scaler.pkl')
+        scaler_path = MODEL_DIR / 'credit_card_scaler.pkl'
+        if scaler_path.exists():
+            scaler = joblib.load(scaler_path)
             print("✅ Scaler loaded successfully")
         else:
             raise FileNotFoundError("Scaler file not found")
         
         # Load model info
-        if os.path.exists('model_info.pkl'):
-            with open('model_info.pkl', 'rb') as f:
+        if (MODEL_DIR / 'model_info.pkl').exists():
+            with open(MODEL_DIR / 'model_info.pkl', 'rb') as f:
                 model_info = pickle.load(f)
             print(f"✅ Model info loaded: {model_info}")
         else:
             raise FileNotFoundError("Model info file not found")
         
         # Load feature names
-        if os.path.exists('feature_names.pkl'):
-            with open('feature_names.pkl', 'rb') as f:
+        if (MODEL_DIR / 'feature_names.pkl').exists():
+            with open(MODEL_DIR / 'feature_names.pkl', 'rb') as f:
                 feature_names = pickle.load(f)
             print(f"✅ Feature names loaded: {len(feature_names)} features")
         else:
@@ -108,15 +111,15 @@ def load_models():
         
         # Load the appropriate model
         if model_info['model_type'] == 'deep_learning':
-            if os.path.exists('best_model_deep_learning.h5'):
-                model = keras.models.load_model('best_model_deep_learning.h5')
+            if (MODEL_DIR / 'best_model_deep_learning.h5').exists():
+                model = keras.models.load_model(MODEL_DIR / 'best_model_deep_learning.h5')
                 print("✅ Deep Learning model loaded successfully")
             else:
                 raise FileNotFoundError("Deep Learning model file not found")
         else:
             # Load traditional ML model
-            model_file = f"best_model_{model_info['model_name'].lower().replace(' ', '_')}.pkl"
-            if os.path.exists(model_file):
+            model_file = MODEL_DIR / f"best_model_{model_info['model_name'].lower().replace(' ', '_')}.pkl"
+            if model_file.exists():
                 model = joblib.load(model_file)
                 print(f"✅ {model_info['model_name']} model loaded successfully")
             else:

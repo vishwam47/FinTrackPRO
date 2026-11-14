@@ -4,7 +4,8 @@ const User = require("../models/User");
 // Create Budget and link to user
 const createBudget = async (req, res) => {
   try {
-    const { userId, category, amount, period, startDate, endDate } = req.body;
+    const userId = req.user.userId;
+    const { category, amount, period, startDate, endDate } = req.body;
 
     const newBudget = new Budget({
       category,
@@ -27,7 +28,7 @@ const createBudget = async (req, res) => {
 // Get all Budgets for a user
 const getBudgets = async (req, res) => {
   try {
-    const { userId } = req.body;
+    const userId = req.user.userId;
 
     const user = await User.findById(userId).populate("budget");
 
@@ -46,11 +47,14 @@ const getBudgets = async (req, res) => {
 const updateBudget = async (req, res) => {
   try {
     const { budgetId, category, amount, period, startDate, endDate } = req.body;
+    if (!(await User.exists({ _id: req.user.userId, budget: budgetId }))) {
+      return res.status(404).json({ message: "Budget not found" });
+    }
 
     const updatedBudget = await Budget.findByIdAndUpdate(
       budgetId,
       { category, amount, period, startDate, endDate },
-      { new: true }
+      { new: true, runValidators: true }
     );
 
     if (!updatedBudget) {
@@ -67,8 +71,12 @@ const updateBudget = async (req, res) => {
 // Delete Budget and remove from user
 const deleteBudget = async (req, res) => {
   try {
-    const { userId, budgetId } = req.body;
+    const userId = req.user.userId;
+    const { budgetId } = req.body;
 
+    if (!(await User.exists({ _id: userId, budget: budgetId }))) {
+      return res.status(404).json({ message: "Budget not found" });
+    }
     const deletedBudget = await Budget.findByIdAndDelete(budgetId);
 
     if (!deletedBudget) {

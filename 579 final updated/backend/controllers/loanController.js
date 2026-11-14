@@ -4,8 +4,8 @@ const User = require("../models/User");
 // Create Loan and link to user
 const createLoan = async (req, res) => {
   try {
-    const { userId, lender, totalAmount, paidAmount, emiAmount, dueDate } =
-      req.body;
+    const userId = req.user.userId;
+    const { lender, totalAmount, paidAmount, emiAmount, dueDate } = req.body;
 
     const newLoan = new Loan({
       lender,
@@ -28,7 +28,7 @@ const createLoan = async (req, res) => {
 // Get all Loans for a user
 const getLoans = async (req, res) => {
   try {
-    const { userId } = req.body;
+    const userId = req.user.userId;
 
     const user = await User.findById(userId).populate("loan");
 
@@ -55,11 +55,14 @@ const updateLoan = async (req, res) => {
       dueDate,
       paymentHistory,
     } = req.body;
+    if (!(await User.exists({ _id: req.user.userId, loan: loanId }))) {
+      return res.status(404).json({ message: "Loan not found" });
+    }
 
     const updatedLoan = await Loan.findByIdAndUpdate(
       loanId,
       { lender, totalAmount, paidAmount, emiAmount, dueDate, paymentHistory },
-      { new: true }
+      { new: true, runValidators: true }
     );
 
     if (!updatedLoan) {
@@ -76,8 +79,12 @@ const updateLoan = async (req, res) => {
 // Delete Loan and unlink from user
 const deleteLoan = async (req, res) => {
   try {
-    const { userId, loanId } = req.body;
+    const userId = req.user.userId;
+    const { loanId } = req.body;
 
+    if (!(await User.exists({ _id: userId, loan: loanId }))) {
+      return res.status(404).json({ message: "Loan not found" });
+    }
     const deletedLoan = await Loan.findByIdAndDelete(loanId);
 
     if (!deletedLoan) {

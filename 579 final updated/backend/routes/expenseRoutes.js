@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+const auth = require("../middleware/auth");
 const {
   createExpense,
   getExpenses,
@@ -7,7 +8,8 @@ const {
   deleteExpense,
 } = require("../controllers/expenseController");
 
-// Only POST requests
+router.use(auth);
+
 router.post("/create", createExpense);
 router.post("/get", getExpenses);
 router.post("/update", updateExpense);

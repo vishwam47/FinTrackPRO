@@ -4,15 +4,9 @@ const User = require("../models/User");
 // Create Expense and link to user
 const createExpense = async (req, res) => {
   try {
-    const {
-      userId,
-      amount,
-      category,
-      description,
-      date,
-      isRecurring,
-      receiptImage,
-    } = req.body;
+    const userId = req.user.userId;
+    const { amount, category, description, date, isRecurring, receiptImage } =
+      req.body;
 
     const newExpense = new Expense({
       amount,
@@ -38,7 +32,7 @@ const createExpense = async (req, res) => {
 // Get all Expenses for a user
 const getExpenses = async (req, res) => {
   try {
-    const { userId } = req.body;
+    const userId = req.user.userId;
 
     const user = await User.findById(userId).populate("expenses");
 
@@ -56,6 +50,7 @@ const getExpenses = async (req, res) => {
 // Update Expense
 const updateExpense = async (req, res) => {
   try {
+    const userId = req.user.userId;
     const {
       expenseId,
       amount,
@@ -66,10 +61,14 @@ const updateExpense = async (req, res) => {
       receiptImage,
     } = req.body;
 
+    if (!(await User.exists({ _id: userId, expenses: expenseId }))) {
+      return res.status(404).json({ message: "Expense not found" });
+    }
+
     const updatedExpense = await Expense.findByIdAndUpdate(
       expenseId,
       { amount, category, description, date, isRecurring, receiptImage },
-      { new: true }
+      { new: true, runValidators: true }
     );
 
     if (!updatedExpense) {
@@ -88,8 +87,12 @@ const updateExpense = async (req, res) => {
 // Delete Expense and unlink from user
 const deleteExpense = async (req, res) => {
   try {
-    const { userId, expenseId } = req.body;
+    const userId = req.user.userId;
+    const { expenseId } = req.body;
 
+    if (!(await User.exists({ _id: userId, expenses: expenseId }))) {
+      return res.status(404).json({ message: "Expense not found" });
+    }
     const deletedExpense = await Expense.findByIdAndDelete(expenseId);
 
     if (!deletedExpense) {

@@ -1,0 +1,7 @@
+.env
+**/.env
+**/__pycache__/
+**/*.py[cod]
+**/*.backup
+**/test_*.py
+stock_cache.db

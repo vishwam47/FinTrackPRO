@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+const auth = require("../middleware/auth");
 const {
   createLoan,
   getLoans,
@@ -7,7 +8,8 @@ const {
   deleteLoan,
 } = require("../controllers/loanController");
 
-// Only POST requests
+router.use(auth);
+
 router.post("/create", createLoan);
 router.post("/get", getLoans);
 router.post("/update", updateLoan);

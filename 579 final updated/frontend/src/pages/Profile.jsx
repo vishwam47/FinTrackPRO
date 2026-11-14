@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import axios from "axios";
+import api from "../services/api";
 import { useNavigate } from "react-router-dom";
 import Header from "../components/Header";
 import {
@@ -49,10 +49,9 @@ const Profile = () => {
 
   const getUserData = async () => {
     try {
-      const { data } = await axios.post(
-        "http://localhost:5000/api/user/getuser",
-        { userId: user?._id }
-      );
+      const { data } = await api.post("/api/user/getuser", {
+        userId: user?._id,
+      });
       setUserData(data?.user);
       setLoading(false);
     } catch (error) {

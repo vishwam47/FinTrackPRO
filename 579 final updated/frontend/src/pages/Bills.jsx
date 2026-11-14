@@ -15,7 +15,7 @@ import {
   FiTrendingDown,
 } from "react-icons/fi";
 import { motion, AnimatePresence } from "framer-motion";
-import axios from "axios";
+import api from "../services/api";
 import Header from "../components/Header";
 import { Bar, Pie } from "react-chartjs-2";
 import { Chart as ChartJS, registerables } from "chart.js";
@@ -24,8 +24,6 @@ ChartJS.register(...registerables);
 const Bills = () => {
   const user = JSON.parse(localStorage.getItem("user"));
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
   const [receiptPreview, setReceiptPreview] = useState(null);
   const [userData, setUserData] = useState(null);
   const [editingExpense, setEditingExpense] = useState(null);
@@ -60,10 +58,9 @@ const Bills = () => {
   const getUserData = async () => {
     try {
       setLoading(true);
-      const { data } = await axios.post(
-        "http://localhost:5000/api/user/getuser",
-        { userId: user?._id }
-      );
+      const { data } = await api.post("/api/user/getuser", {
+        userId: user?._id,
+      });
       setUserData(data?.user);
     } catch (error) {
       console.error("Error fetching user data:", error);
@@ -75,47 +72,6 @@ const Bills = () => {
   const handleInputChange = (e) => {
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
-  };
-
-  const handleFileChange = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (e) => setReceiptPreview(e.target.result);
-    reader.readAsDataURL(file);
-
-    setIsUploading(true);
-    setUploadProgress(0);
-
-    const uploadFormData = new FormData();
-    uploadFormData.append("file", file);
-    uploadFormData.append("upload_preset", "hg73yvrn");
-
-    try {
-      const response = await axios.post(
-        `https://api.cloudinary.com/v1_1/didyxuyd5/image/upload`,
-        uploadFormData,
-        {
-          onUploadProgress: (progressEvent) => {
-            const percentCompleted = Math.round(
-              (progressEvent.loaded * 100) / progressEvent.total
-            );
-            setUploadProgress(percentCompleted);
-          },
-        }
-      );
-
-      setFormData((prev) => ({ 
-        ...prev, 
-        receiptImage: response.data.secure_url 
-      }));
-    } catch (error) {
-      console.error("Upload failed:", error);
-      alert("Failed to upload receipt");
-    } finally {
-      setIsUploading(false);
-    }
   };
 
   const checkExpenseThreshold = async () => {
@@ -132,22 +88,12 @@ const Bills = () => {
       const totalExpenses = getTotalExpenses();
 
       if (totalIncome > 0 && totalExpenses / totalIncome > 0.5) {
-        const now = new Date();
-        const month = now.toLocaleString("default", { month: "long" });
-        const year = now.getFullYear();
         const percentage = Math.round((totalExpenses / totalIncome) * 100);
-
-        await axios.post("http://localhost:5000/api/send-budget-alert", {
-          email: userData.email,
-          category: "Overall Expenses",
-          percentage,
-          month: `${month} ${year}`,
-        });
 
         sessionStorage.setItem("budgetAlertSent", "true");
 
         setAlertMessage(
-          `Warning: Your expenses (${percentage}%) exceed 50% of your income. An alert has been sent to your email.`
+          `Warning: Your expenses (${percentage}%) exceed 50% of your income. Review your budget and recent spending.`
         );
         setShowAlert(true);
       }
@@ -180,32 +126,26 @@ const Bills = () => {
 
     try {
       if (editingExpense) {
-        await axios.post(
-          "http://localhost:5000/api/expense/update",
-          {
-            expenseId: editingExpense._id,
-            amount: Number(formData.amount),
-            category: formData.category,
-            description: formData.description,
-            date: formData.date,
-            isRecurring: false,
-            receiptImage: formData.receiptImage,
-          }
-        );
+        await api.post("/api/expense/update", {
+          expenseId: editingExpense._id,
+          amount: Number(formData.amount),
+          category: formData.category,
+          description: formData.description,
+          date: formData.date,
+          isRecurring: false,
+          receiptImage: formData.receiptImage,
+        });
         alert("Expense updated successfully!");
       } else {
-        await axios.post(
-          "http://localhost:5000/api/expense/create",
-          {
-            userId: user?._id,
-            amount: Number(formData.amount),
-            category: formData.category,
-            description: formData.description,
-            date: formData.date,
-            isRecurring: false,
-            receiptImage: formData.receiptImage,
-          }
-        );
+        await api.post("/api/expense/create", {
+          userId: user?._id,
+          amount: Number(formData.amount),
+          category: formData.category,
+          description: formData.description,
+          date: formData.date,
+          isRecurring: false,
+          receiptImage: formData.receiptImage,
+        });
         alert("Expense added successfully!");
       }
 
@@ -250,7 +190,7 @@ const Bills = () => {
   const handleDelete = async (expenseId) => {
     if (window.confirm("Are you sure you want to delete this expense?")) {
       try {
-        await axios.post(`http://localhost:5000/api/expense/delete`, {
+        await api.post("/api/expense/delete", {
           userId: user?._id,
           expenseId,
         });
@@ -865,35 +805,14 @@ const Bills = () => {
                                 alt="Receipt preview"
                                 className="mx-auto h-32 object-contain"
                               />
-                              {isUploading && (
-                                <div className="absolute bottom-0 left-0 right-0 bg-gray-200 h-2">
-                                  <div
-                                    className="bg-green-500 h-2"
-                                    style={{ width: `${uploadProgress}%` }}
-                                  ></div>
-                                </div>
-                              )}
                             </div>
                           ) : (
                             <>
                               <div className="flex text-sm text-gray-600 justify-center">
-                                <label
-                                  htmlFor="file-upload"
-                                  className="relative cursor-pointer bg-white rounded-md font-medium text-green-600 hover:text-green-500 focus-within:outline-none"
-                                >
-                                  <span>Upload a file</span>
-                                  <input
-                                    id="file-upload"
-                                    name="file-upload"
-                                    type="file"
-                                    className="sr-only"
-                                    onChange={handleFileChange}
-                                    accept="image/*"
-                                  />
-                                </label>
+                                <span className="font-medium text-gray-500">Receipt uploads are disabled in this demo</span>
                               </div>
                               <p className="text-xs text-gray-500">
-                                PNG, JPG up to 5MB
+                                Do not upload real financial documents.
                               </p>
                             </>
                           )}
@@ -911,14 +830,9 @@ const Bills = () => {
                       </button>
                       <button
                         type="submit"
-                        disabled={isUploading}
-                        className={`px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 ${
-                          isUploading ? "opacity-70 cursor-not-allowed" : ""
-                        }`}
+                        className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
                       >
-                        {isUploading
-                          ? "Uploading..."
-                          : editingExpense
+                        {editingExpense
                           ? "Update Expense"
                           : "Add Expense"}
                       </button>

@@ -2,7 +2,8 @@ import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { FiUser, FiLock, FiMail, FiArrowRight } from "react-icons/fi";
 import { motion } from "framer-motion";
-import axios from "axios";
+import api from "../services/api";
+import { useAuth } from "../context/AuthContext";
 
 const Signup = () => {
   const [formData, setFormData] = useState({
@@ -14,14 +15,7 @@ const Signup = () => {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
-
-  // Create an Axios instance with base URL
-  const api = axios.create({
-    baseURL: "http://localhost:5000/api",
-    headers: {
-      "Content-Type": "application/json",
-    },
-  });
+  const { login } = useAuth();
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -45,23 +39,16 @@ const Signup = () => {
 
     try {
       // Using Axios for the POST request
-      const response = await api.post("/user/signup", {
+      const response = await api.post("/api/user/signup", {
         name: formData.name,
         email: formData.email,
         password: formData.password,
       });
 
-      // Successful registration
-      localStorage.setItem("token", response.data.token);
-      localStorage.setItem("user", JSON.stringify(response.data.user));
-
-      // Set default Authorization header for future requests
-      api.defaults.headers.common[
-        "Authorization"
-      ] = `Bearer ${response.data.token}`;
+      login(response.data.user, response.data.token);
 
       // Redirect to dashboard or verification page
-      navigate("/login");
+      navigate("/");
     } catch (err) {
       // Axios wraps the error response in err.response
       if (err.response) {
@@ -176,14 +163,15 @@ const Signup = () => {
                   type="password"
                   autoComplete="new-password"
                   required
-                  minLength="6"
+                  minLength="12"
+                  maxLength="128"
                   value={formData.password}
                   onChange={handleChange}
                   className="block w-full pl-10 pr-3 py-3 border border-gray-300 rounded-lg shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500"
                   placeholder="••••••••"
                 />
               </div>
-              <p className="mt-1 text-xs text-gray-500">Minimum 6 characters</p>
+              <p className="mt-1 text-xs text-gray-500">Use 12–128 characters</p>
             </div>
 
             <div>

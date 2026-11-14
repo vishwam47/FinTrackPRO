@@ -12,12 +12,10 @@ import {
     FiShield,
     FiZap
 } from "react-icons/fi";
-import axios from "axios";
+import { stockSuggestionsAPI } from "../services/mlapi";
 import { useNavigate } from "react-router-dom";
 import Header from "../components/Header";
 
-const ML_URL = import.meta.env.VITE_ML_API_URL || "http://localhost:8000";
-const slowApi = axios.create({ baseURL: ML_URL, timeout: 90000 });
 
 const riskColors = {
     LOW: { badge: "#10b981", bg: "#ecfdf5", text: "#065f46", shadow: "rgba(16, 185, 129, 0.2)" },
@@ -42,7 +40,7 @@ const StockSignals = () => {
     const fetchSuggestions = async () => {
         setLoading(true);
         try {
-            const res = await slowApi.get("/stock_suggestions/suggestions");
+            const res = await stockSuggestionsAPI.getSuggestions();
             const data = res.data;
             setNotifications(data.notifications || []);
             setSummary(data.summary || null);

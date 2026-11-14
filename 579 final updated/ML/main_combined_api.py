@@ -1,5 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+import os
+from security_middleware import MLAuthMiddleware
 
 try:
     from Algorithmic_Trading.trading_api import app as algorithmic_trading_app
@@ -18,27 +21,67 @@ try:
     from Stock_Suggestions.stock_suggestions_api import app as stock_suggestions_app
     from Gemini_Stock_Analysis.gemini_stock_api import app as gemini_stock_app
     from Stock_News_Fraud.stock_news_fraud_api import app as stock_news_fraud_app
+    from stock_recommender import app as stock_recommender_app
 except ImportError as e:
     print(f"Import Error: {e}")
     print("Make sure all required dependencies are installed and paths are correct")
     print("Also ensure you've removed the 'if __name__ == \"__main__\"' blocks from individual API files")
     raise
 
+mounted_apps = [
+    algorithmic_trading_app, credit_card_default_app, credit_score_prediction_app,
+    cryptocurrency_analysis_and_trading_app, expense_categorization_and_financial_insights_app,
+    financial_document_processing_app, fraud_detection_app, personal_finance_ai_app,
+    realtime_news_sentiment_trading_app, regulatory_compliance_and_aml_detection_app,
+    risk_management_and_portfolio_optimization_app, transaction_fraud_app,
+    stock_suggestions_app, gemini_stock_app, stock_news_fraud_app, stock_recommender_app,
+]
+
+@asynccontextmanager
+async def lifespan(_app):
+    # Mounted FastAPI applications need their lifecycle hooks invoked explicitly.
+    for service in mounted_apps:
+        await service.router.startup()
+    try:
+        yield
+    finally:
+        for service in reversed(mounted_apps):
+            await service.router.shutdown()
+
 main_app = FastAPI(
     title="Combined Realtime Finance API",
     description="Comprehensive Financial Services API combining all microservices including AI-powered stock analysis, suggestions, and fraud detection",
     version="2.0.0",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 main_app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[origin.strip() for origin in os.getenv("CORS_ORIGINS", "").split(",") if origin.strip()],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
+main_app.add_middleware(MLAuthMiddleware, route_apps={
+    "/algorithmic_trading": algorithmic_trading_app,
+    "/credit_card_default": credit_card_default_app,
+    "/credit_score_prediction": credit_score_prediction_app,
+    "/cryptocurrency_analysis_and_trading": cryptocurrency_analysis_and_trading_app,
+    "/expense_categorization_and_financial_insights": expense_categorization_and_financial_insights_app,
+    "/financial_document_processing": financial_document_processing_app,
+    "/fraud_detection": fraud_detection_app,
+    "/personal_finance_ai": personal_finance_ai_app,
+    "/realtime_news_sentiment_trading": realtime_news_sentiment_trading_app,
+    "/regulatory_compliance_and_aml_detection": regulatory_compliance_and_aml_detection_app,
+    "/risk_management_and_portfolio_optimization": risk_management_and_portfolio_optimization_app,
+    "/transaction_fraud": transaction_fraud_app,
+    "/stock_suggestions": stock_suggestions_app,
+    "/gemini_stock": gemini_stock_app,
+    "/stock_news_fraud": stock_news_fraud_app,
+    "/stock_recommender": stock_recommender_app,
+})
 
 main_app.mount("/algorithmic_trading", algorithmic_trading_app)
 main_app.mount("/credit_card_default", credit_card_default_app)
@@ -56,6 +99,7 @@ main_app.mount("/transaction_fraud", transaction_fraud_app)
 main_app.mount("/stock_suggestions", stock_suggestions_app)
 main_app.mount("/gemini_stock", gemini_stock_app)
 main_app.mount("/stock_news_fraud", stock_news_fraud_app)
+main_app.mount("/stock_recommender", stock_recommender_app)
 
 @main_app.get("/")
 async def root():
@@ -63,7 +107,7 @@ async def root():
         "message": "Realtime Finance - Combined API Gateway",
         "version": "1.0.0",
         "description": "Comprehensive financial services platform",
-        "total_services": 12,
+        "total_services": 16,
         "available_services": {
         "algorithmic_trading": {
             "base_path": "/algorithmic_trading",
@@ -137,6 +181,10 @@ async def root():
             "docs": "/transaction_fraud/docs",
             "source_file": "Transaction_Fraud/transaction_fraud_detection_api.py"
         },
+        "stock_suggestions": {"base_path": "/stock_suggestions", "description": "Stock Suggestions", "docs": "/stock_suggestions/docs"},
+        "gemini_stock": {"base_path": "/gemini_stock", "description": "Gemini Stock Analysis", "docs": "/gemini_stock/docs"},
+        "stock_news_fraud": {"base_path": "/stock_news_fraud", "description": "Stock News Fraud", "docs": "/stock_news_fraud/docs"},
+        "stock_recommender": {"base_path": "/stock_recommender", "description": "Stock Recommender", "docs": "/stock_recommender/docs"},
     },
         "documentation": {
             "main_docs": "/docs",
@@ -150,7 +198,7 @@ async def root():
 
 @main_app.get("/health")
 async def combined_health_check():
-    service_names = ["algorithmic_trading", "credit_card_default", "credit_score_prediction", "cryptocurrency_analysis_and_trading", "expense_categorization_and_financial_insights", "financial_document_processing", "fraud_detection", "personal_finance_ai", "realtime_news_sentiment_trading", "regulatory_compliance_and_aml_detection", "risk_management_and_portfolio_optimization", "transaction_fraud"]
+    service_names = ["algorithmic_trading", "credit_card_default", "credit_score_prediction", "cryptocurrency_analysis_and_trading", "expense_categorization_and_financial_insights", "financial_document_processing", "fraud_detection", "personal_finance_ai", "realtime_news_sentiment_trading", "regulatory_compliance_and_aml_detection", "risk_management_and_portfolio_optimization", "transaction_fraud", "stock_suggestions", "gemini_stock", "stock_news_fraud", "stock_recommender"]
     services_status = {}
     for service_name in service_names:
         services_status[service_name] = {
@@ -159,11 +207,18 @@ async def combined_health_check():
             "docs": f"/{service_name}/docs"
         }
     
+    models = {
+        "transaction_fraud": transaction_fraud_app.model is not None,
+        "card_fraud": fraud_detection_app.model is not None,
+        "credit_card_default": credit_card_default_app.model is not None,
+        "credit_score": credit_score_prediction_app.model is not None,
+    }
     return {
-        "status": "healthy",
-        "timestamp": "2025-06-26",
+        "status": "healthy" if all(models.values()) else "degraded",
+        "timestamp": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
         "services": services_status,
-        "total_services": len(services_status)
+        "total_services": len(services_status),
+        "models": models,
     }
 
 @main_app.get("/services")
@@ -242,14 +297,18 @@ async def list_services():
             "docs": "/transaction_fraud/docs",
             "source_file": "Transaction_Fraud/transaction_fraud_detection_api.py"
         },
+        "stock_suggestions": {"base_path": "/stock_suggestions", "description": "Stock Suggestions", "docs": "/stock_suggestions/docs"},
+        "gemini_stock": {"base_path": "/gemini_stock", "description": "Gemini Stock Analysis", "docs": "/gemini_stock/docs"},
+        "stock_news_fraud": {"base_path": "/stock_news_fraud", "description": "Stock News Fraud", "docs": "/stock_news_fraud/docs"},
+        "stock_recommender": {"base_path": "/stock_recommender", "description": "Stock Recommender", "docs": "/stock_recommender/docs"},
     },
-        "total_count": 12
+        "total_count": 16
     }
 
 @main_app.get("/urls")
 async def get_service_urls():
-    base_url = "http://localhost:8000"
-    service_names = ["algorithmic_trading", "credit_card_default", "credit_score_prediction", "cryptocurrency_analysis_and_trading", "expense_categorization_and_financial_insights", "financial_document_processing", "fraud_detection", "personal_finance_ai", "realtime_news_sentiment_trading", "regulatory_compliance_and_aml_detection", "risk_management_and_portfolio_optimization", "transaction_fraud"]
+    base_url = os.getenv("ML_PUBLIC_BASE_URL", "").rstrip("/")
+    service_names = ["algorithmic_trading", "credit_card_default", "credit_score_prediction", "cryptocurrency_analysis_and_trading", "expense_categorization_and_financial_insights", "financial_document_processing", "fraud_detection", "personal_finance_ai", "realtime_news_sentiment_trading", "regulatory_compliance_and_aml_detection", "risk_management_and_portfolio_optimization", "transaction_fraud", "stock_suggestions", "gemini_stock", "stock_news_fraud", "stock_recommender"]
     urls = {}
     for service_name in service_names:
         urls[service_name] = {
@@ -268,4 +327,4 @@ if __name__ == "__main__":
         print(f"  - {service}: /{service}")
     print("\nAccess the API at: http://localhost:8000")
     print("Main documentation: http://localhost:8000/docs")
-    uvicorn.run("main_combined_api:main_app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main_combined_api:main_app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")))

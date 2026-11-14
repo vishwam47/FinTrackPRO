@@ -4,7 +4,8 @@ const User = require("../models/User");
 // Create Notification and link to user
 const createNotification = async (req, res) => {
   try {
-    const { userId, type, message, isRead, date } = req.body;
+    const userId = req.user.userId;
+    const { type, message, isRead, date } = req.body;
 
     const newNotification = new Notification({ type, message, isRead, date });
     await newNotification.save();
@@ -25,7 +26,7 @@ const createNotification = async (req, res) => {
 // Get all Notifications for a user
 const getNotifications = async (req, res) => {
   try {
-    const { userId } = req.body;
+    const userId = req.user.userId;
 
     const user = await User.findById(userId).populate("notification");
 
@@ -44,11 +45,14 @@ const getNotifications = async (req, res) => {
 const updateNotification = async (req, res) => {
   try {
     const { notificationId, type, message, isRead, date } = req.body;
+    if (!(await User.exists({ _id: req.user.userId, notification: notificationId }))) {
+      return res.status(404).json({ message: "Notification not found" });
+    }
 
     const updatedNotification = await Notification.findByIdAndUpdate(
       notificationId,
       { type, message, isRead, date },
-      { new: true }
+      { new: true, runValidators: true }
     );
 
     if (!updatedNotification) {
@@ -70,8 +74,12 @@ const updateNotification = async (req, res) => {
 // Delete Notification and unlink from user
 const deleteNotification = async (req, res) => {
   try {
-    const { userId, notificationId } = req.body;
+    const userId = req.user.userId;
+    const { notificationId } = req.body;
 
+    if (!(await User.exists({ _id: userId, notification: notificationId }))) {
+      return res.status(404).json({ message: "Notification not found" });
+    }
     const deletedNotification = await Notification.findByIdAndDelete(
       notificationId
     );

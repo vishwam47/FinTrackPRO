@@ -2,15 +2,11 @@ const mongoose = require("mongoose");
 
 const userSchema = new mongoose.Schema(
   {
-    name: {
-      type: String,
-    },
-    email: {
-      type: String,
-    },
-    password: {
-      type: String,
-    },
+    name: { type: String, required: true, trim: true, maxlength: 80 },
+    email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+    password: { type: String, required: true },
+    isDemo: { type: Boolean, default: false, index: true },
+    demoExpiresAt: { type: Date, default: null, index: true },
     expenses: [
       {
         type: mongoose.Schema.Types.ObjectId,

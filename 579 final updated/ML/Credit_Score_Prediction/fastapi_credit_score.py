@@ -7,6 +7,7 @@ import tensorflow as tf
 from tensorflow.keras.models import load_model
 from typing import List, Optional
 import uvicorn
+from pathlib import Path
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -14,6 +15,7 @@ app = FastAPI(
     description="API for predicting credit scores using machine learning",
     version="1.0.0"
 )
+MODEL_DIR = Path(__file__).resolve().parent
 
 # Global variables for model and scaler
 model = None
@@ -25,11 +27,11 @@ async def load_model_and_scaler():
     global model, scaler
     try:
         # Load the trained model
-        model = load_model('final_model_credit_score.keras')
+        model = load_model(MODEL_DIR / 'final_model_credit_score.keras')
         print("Model loaded successfully!")
         
         # Load the scaler
-        with open("credit_score_scaler", 'rb') as f:
+        with open(MODEL_DIR / "credit_score_scaler", 'rb') as f:
             scaler = pickle.load(f)
         print("Scaler loaded successfully!")
         

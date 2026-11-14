@@ -14,7 +14,7 @@ import {
   FiChevronUp,
 } from "react-icons/fi";
 import { motion, AnimatePresence } from "framer-motion";
-import axios from "axios";
+import api from "../services/api";
 import Header from "../components/Header";
 import { Bar, Pie } from "react-chartjs-2";
 import { Chart as ChartJS, registerables } from "chart.js";
@@ -45,12 +45,7 @@ const Income = () => {
   const fetchIncomes = async () => {
     try {
       setIsLoading(true);
-      const { data } = await axios.post(
-        "http://localhost:5000/api/income/get",
-        {
-          userId: user._id,
-        }
-      );
+      const { data } = await api.post("/api/income/get", { userId: user._id });
       setIncomes(data.income || []);
       setIsLoading(false);
     } catch (error) {
@@ -68,24 +63,14 @@ const Income = () => {
     e.preventDefault();
     try {
       const endpoint = selectedIncome
-        ? "http://localhost:5000/api/income/update"
-        : "http://localhost:5000/api/income/create";
+        ? "/api/income/update"
+        : "/api/income/create";
 
       const payload = selectedIncome
-        ? {
-            incomeId: selectedIncome._id,
-            ...formData,
-          }
-        : {
-            userId: user._id,
-            ...formData,
-          };
+        ? { incomeId: selectedIncome._id, ...formData }
+        : { userId: user._id, ...formData };
 
-      await axios.post(endpoint, payload, {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem("token")}`,
-        },
-      });
+      await api.post(endpoint, payload);
 
       setIsModalOpen(false);
       setSelectedIncome(null);
@@ -104,18 +89,10 @@ const Income = () => {
 
   const handleDelete = async () => {
     try {
-      await axios.post(
-        "http://localhost:5000/api/income/delete",
-        {
-          userId: user._id,
-          incomeId: selectedIncome._id,
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem("token")}`,
-          },
-        }
-      );
+      await api.post("/api/income/delete", {
+        userId: user._id,
+        incomeId: selectedIncome._id,
+      });
 
       setIsDeleteModalOpen(false);
       setSelectedIncome(null);

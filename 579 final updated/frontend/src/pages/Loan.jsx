@@ -16,7 +16,7 @@ import {
   FiX,
 } from "react-icons/fi";
 import { motion, AnimatePresence } from "framer-motion";
-import axios from "axios";
+import api from "../services/api";
 import Header from "../components/Header";
 
 const Loan = () => {
@@ -49,9 +49,7 @@ const Loan = () => {
   const fetchLoans = async () => {
     try {
       setIsLoading(true);
-      const { data } = await axios.post("http://localhost:5000/api/loan/get", {
-        userId: user._id,
-      });
+      const { data } = await api.post("/api/loan/get", { userId: user._id });
       setLoans(data.loans || []);
       setIsLoading(false);
     } catch (error) {
@@ -74,24 +72,14 @@ const Loan = () => {
     e.preventDefault();
     try {
       const endpoint = selectedLoan
-        ? "http://localhost:5000/api/loan/update"
-        : "http://localhost:5000/api/loan/create";
+        ? "/api/loan/update"
+        : "/api/loan/create";
 
       const payload = selectedLoan
-        ? {
-            loanId: selectedLoan._id,
-            ...formData,
-          }
-        : {
-            userId: user._id,
-            ...formData,
-          };
+        ? { loanId: selectedLoan._id, ...formData }
+        : { userId: user._id, ...formData };
 
-      await axios.post(endpoint, payload, {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem("token")}`,
-        },
-      });
+      await api.post(endpoint, payload);
 
       setIsModalOpen(false);
       setSelectedLoan(null);
@@ -130,19 +118,11 @@ const Loan = () => {
         0
       );
 
-      await axios.post(
-        "http://localhost:5000/api/loan/update",
-        {
-          loanId: expandedLoan,
-          paidAmount: totalPaid,
-          paymentHistory: updatedPaymentHistory,
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem("token")}`,
-          },
-        }
-      );
+      await api.post("/api/loan/update", {
+        loanId: expandedLoan,
+        paidAmount: totalPaid,
+        paymentHistory: updatedPaymentHistory,
+      });
 
       setPaymentForm({
         amount: "",
@@ -157,18 +137,10 @@ const Loan = () => {
 
   const handleDelete = async () => {
     try {
-      await axios.post(
-        "http://localhost:5000/api/loan/delete",
-        {
-          userId: user._id,
-          loanId: selectedLoan._id,
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem("token")}`,
-          },
-        }
-      );
+      await api.post("/api/loan/delete", {
+        userId: user._id,
+        loanId: selectedLoan._id,
+      });
 
       setIsDeleteModalOpen(false);
       setSelectedLoan(null);
