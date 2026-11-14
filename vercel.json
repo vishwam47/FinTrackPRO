@@ -1,0 +1,153 @@
+
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "backend": {
+      "root": "579 final updated/backend",
+      "framework": "express"
+    },
+    "frontend": {
+      "root": "579 final updated/frontend",
+      "framework": "vite",
+      "rewrites": [
+        {
+          "source": "/(.*)",
+          "destination": "/index.html"
+        }
+      ]
+    },
+    "ml": {
+      "root": "579 final updated/ML",
+      "framework": "fastapi",
+      "entrypoint": "main_combined_api:main_app"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": {
+        "service": "backend"
+      }
+    },
+    {
+      "source": "/algorithmic_trading/(.*)",
+      "destination": {
+        "service": "ml"
+      }
+    },
+    {
+      "source": "/credit_card_default/(.*)",
+      "destination": {
+        "service": "ml"
+      }
+    },
+    {
+      "source": "/credit_score_prediction/(.*)",
+      "destination": {
+        "service": "ml"
+      }
+    },
+    {
+      "source": "/cryptocurrency_analysis_and_trading/(.*)",
+      "destination": {
+        "service": "ml"
+      }
+    },
+    {
+      "source": "/expense_categorization_and_financial_insights/(.*)",
+      "destination": {
+        "service": "ml"
+      }
+    },
+    {
+      "source": "/financial_document_processing/(.*)",
+      "destination": {
+        "service": "ml"
+      }
+    },
+    {
+      "source": "/fraud_detection/(.*)",
+      "destination": {
+        "service": "ml"
+      }
+    },
+    {
+      "source": "/personal_finance_ai/(.*)",
+      "destination": {
+        "service": "ml"
+      }
+    },
+    {
+      "source": "/realtime_news_sentiment_trading/(.*)",
+      "destination": {
+        "service": "ml"
+      }
+    },
+    {
+      "source": "/regulatory_compliance_and_aml_detection/(.*)",
+      "destination": {
+        "service": "ml"
+      }
+    },
+    {
+      "source": "/risk_management_and_portfolio_optimization/(.*)",
+      "destination": {
+        "service": "ml"
+      }
+    },
+    {
+      "source": "/transaction_fraud/(.*)",
+      "destination": {
+        "service": "ml"
+      }
+    },
+    {
+      "source": "/stock_suggestions/(.*)",
+      "destination": {
+        "service": "ml"
+      }
+    },
+    {
+      "source": "/gemini_stock/(.*)",
+      "destination": {
+        "service": "ml"
+      }
+    },
+    {
+      "source": "/stock_news_fraud/(.*)",
+      "destination": {
+        "service": "ml"
+      }
+    },
+    {
+      "source": "/health",
+      "destination": {
+        "service": "ml"
+      }
+    },
+    {
+      "source": "/docs",
+      "destination": {
+        "service": "ml"
+      }
+    },
+    {
+      "source": "/redoc",
+      "destination": {
+        "service": "ml"
+      }
+    },
+    {
+      "source": "/openapi.json",
+      "destination": {
+        "service": "ml"
+      }
+    },
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "frontend"
+      }
+    }
+  ]
+}
